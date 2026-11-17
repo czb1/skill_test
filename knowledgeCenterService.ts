@@ -521,7 +521,7 @@ interface SkillEvalModeResult {
   external_task_id: string | null;
   version: string | null;
   report: Record<string, any> | null;
-  report_status: 'ready' | 'pending' | 'error' | 'not_available' | string;
+  report_status: 'ready' | 'pending' | 'unloaded' | 'error' | 'not_available' | string;
   error: unknown | null;
   report_error: string | null;
   created_at: string | null;
@@ -556,6 +556,10 @@ interface SkillEvalQueryParams extends SkillEvalScopeParams {
   keyword?: string | null;
   page?: number;
   page_size?: number;
+}
+interface SkillEvalResultsParams extends SkillEvalQueryParams {
+  include_reports?: boolean;
+  skill_ids?: string[];
 }
 interface SkillEvalCreateParams extends SkillEvalScopeParams {
   skill_ids: string[];
@@ -936,7 +940,7 @@ const kcService = {
   getEvaluableSkills: (params: SkillEvalQueryParams): Promise<PageResult<SkillEvalSkillItem>> =>
       kcPost<PageResult<SkillEvalSkillItem>>(`${BASE}/skillEval/evaluableSkills`, params),
 
-  getSkillEvalResults: (params: SkillEvalQueryParams, signal?: AbortSignal): Promise<PageResult<SkillEvalSkillResult>> =>
+  getSkillEvalResults: (params: SkillEvalResultsParams, signal?: AbortSignal): Promise<PageResult<SkillEvalSkillResult>> =>
       kcPost<PageResult<SkillEvalSkillResult>>(`${BASE}/skillEval/results`, params, signal),
 
   createSkillEvaluation: (data: SkillEvalCreateParams): Promise<SkillEvalCreateResult> =>
@@ -1010,7 +1014,9 @@ export type {
   SkillEvalSkillResult,
   SkillEvalCreateResult,
   SkillEvalQueryParams,
+  SkillEvalResultsParams,
   SkillEvalCreateParams,
   SkillEvalSubmissionResult,
 };
+
 

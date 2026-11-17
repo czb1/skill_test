@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query, Response, BackgroundTasks
 from fastapi import Request
+from typing import List, Optional
 from exception.exceptions import ProjectException
 from knowledge_center.skill_eval_center import get_skill_eval_results
 from logger import logger
@@ -318,13 +319,20 @@ def skill_eval_evaluable_list(req: SkillEvaluableListRequest):
         raise HTTPException(status_code=500, detail=str(error))
 
 
+class SkillEvalResultsRequest(SkillEvaluableListRequest):
+    # 默认保留原有完整响应；列表先查询状态，再按当前页 ID 加载报告。
+    include_reports: bool = True
+    skill_ids: Optional[List[str]] = None
+
+
 @knowledge_center_route.post("/skillEval/results")
-def skill_eval_results(req: SkillEvaluableListRequest):
-    """按 Skill 返回部门/产品/PDU 下开发已完成的 Skill 各维度最新状态与报告。"""
+def skill_eval_results(req: SkillEvalResultsRequest):
+    """include_reports=false 只返回状态；skill_ids 限定需要读取报告的 Skill。"""
     try:
         data = get_skill_eval_results(
             offering_id=req.offering_id, pdu=req.pdu, department=req.department,
-            keyword=req.keyword, page=req.page, page_size=req.page_size)
+            keyword=req.keyword, page=req.page, page_size=req.page_size,
+            include_reports=req.include_reports, skill_ids=req.skill_ids)
         return ResponseModel.success(data=data)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -913,3 +921,4 @@ def reflow_callback(req: ReflowCallbackRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+

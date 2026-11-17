@@ -180,6 +180,7 @@
             <button v-if="skillFilter.keyword" class="eval-filter-clear" @click="clearSkillFilter">清除</button>
             <button class="eval-filter-clear" :disabled="skillResultsLoading" @click="loadSkillResults()">{{ skillResultsLoading ? '刷新中…' : '刷新结果' }}</button>
             <span class="skill-list-hint">仅展示评测中或已有报告的 Skill</span>
+            <span v-if="skillReportsLoading" class="skill-list-hint" role="status">正在加载当前页报告…</span>
           </div>
           <p v-if="!skillScopeValid()" class="skill-state">请先选择有效的部门、产品或 PDU。</p>
           <p v-if="skillObservationNotice" class="skill-report-notice">{{ skillObservationNotice }}</p>
@@ -1214,6 +1215,7 @@ function skillReportState(result: SkillEvalModeResult | null): string {
   if (!result) return '未评测';
   if (result.status === 'completed') {
     if (hasReadySkillReport(result)) return '';
+    if (result.report_status === 'unloaded') return '报告待加载';
     if (result.report_status === 'error') return '报告读取失败';
     return '报告生成中';
   }
@@ -1222,6 +1224,7 @@ function skillReportState(result: SkillEvalModeResult | null): string {
 function skillModeNotice(result: SkillEvalModeResult | null): string {
   if (result?.status === 'failed') return `执行失败：${skillErrorText(result.error || '评测服务未返回失败原因')}`;
   if (result?.report_status === 'error') return `报告读取失败：${result.report_error || '请刷新重试'}`;
+  if (result?.report_status === 'unloaded') return '正在加载报告，请稍候。';
   if (result?.status === 'completed' && !hasReadySkillReport(result)) return '执行已完成，报告生成中，可稍后刷新。';
   return `${skillModeStatusLabel(result?.status || 'not_evaluated')}，暂无可查看的报告。`;
 }
@@ -1288,8 +1291,10 @@ async function selectAllSkills() {
 function searchEvaluableSkills() { if (skillSubmitting.value) return; pickerSession++; selectingAllSkills.value = false; skillListPage.value = 1; void loadEvaluableSkills(); }
 function goSkillListPage(page: number) { if (page < 1 || page > skillListTotalPages.value || page === skillListPage.value) return; skillListPage.value = page; void loadEvaluableSkills(); }
 
-// 只展示开发已完成的 Skill；收齐后按评测状态筛选、分页，避免漏掉后续页的有效结果。
+// 收齐轻量状态后筛选分页；只加载当前显示页、抽屉与待确认记录的报告。
 const scopedSkillResults = ref<SkillEvalSkillResult[]>([]);
+const observedSkillResults = ref<SkillEvalSkillResult[]>([]);
+const skillReportLoadedAt = new Map<string, number>();
 function shouldDisplaySkillResult(skill: SkillEvalSkillResult): boolean {
   if (skill.skill_status !== '已完成' || hasSkillMatchError(skill)) return false;
   return SKILL_MODE_KEYS.some(mode => {
@@ -1297,13 +1302,14 @@ function shouldDisplaySkillResult(skill: SkillEvalSkillResult): boolean {
     if (!result) return false;
     const status = normalizeSkillModeStatus(result.status);
     const evaluating = !isSkillModeTerminal(result);
-    const generatingReport = status === 'completed' && result.report_status === 'pending';
+    const generatingReport = status === 'completed' && ['pending', 'unloaded'].includes(result.report_status);
     const hasReport = hasReadySkillReport(result) && hasReportValue(result.report);
     return evaluating || generatingReport || hasReport;
   });
 }
 const displayedSkillResults = computed(() => scopedSkillResults.value.filter(shouldDisplaySkillResult));
 const skillResults = ref<SkillEvalSkillResult[]>([]), skillResultsLoading = ref(false), skillResultsError = ref('');
+const skillReportsLoading = ref(false);
 const skillFilter = reactive({ keyword: '' });
 const skillPage = ref(1), skillPageSize = ref(10), skillTotal = ref(0), skillJumpPage = ref(1);
 const skillTotalPages = computed(() => Math.max(1, Math.ceil(skillTotal.value / skillPageSize.value)));
@@ -1327,7 +1333,7 @@ function applySkillResultPage() {
 async function collectScopedSkillResults(scope: ReturnType<typeof skillScopeParams>, keyword: string | undefined, signal: AbortSignal): Promise<SkillEvalSkillResult[]> {
   const byId = new Map<string, SkillEvalSkillResult>();
   for (let page = 1; ; page++) {
-    const res = await kcService.getSkillEvalResults({ ...scope, keyword, page, page_size: 100 }, signal);
+    const res = await kcService.getSkillEvalResults({ ...scope, keyword, page, page_size: 100, include_reports: false }, signal);
     for (const skill of res.items || []) byId.set(skill.skill_id, skill);
     if (!res.items?.length || page * 100 >= res.total) break;
   }
@@ -1361,7 +1367,7 @@ function observeSkillResults(items: SkillEvalSkillResult[]) {
     Object.keys(entries).forEach(mode => {
       const result = skillModeResult(skill, mode), item = entries[mode];
       if (skillSourceIdentity(result) !== item.before && result?.status !== 'not_evaluated') item.seen = true;
-      if (item.seen && isSkillModeTerminal(result) && !(result?.status === 'completed' && result.report_status === 'pending')) delete entries[mode];
+      if (item.seen && isSkillModeTerminal(result) && !(result?.status === 'completed' && ['pending', 'unloaded'].includes(result.report_status))) delete entries[mode];
     });
     if (!Object.keys(entries).length) delete pendingSkillObservations[skill.skill_id];
   });
@@ -1369,28 +1375,83 @@ function observeSkillResults(items: SkillEvalSkillResult[]) {
 let skillPollTimer: ReturnType<typeof setTimeout> | null = null;
 let skillContext = 0, skillDisposed = false, skillRefreshAgain = false;
 let skillResultsRequest: Promise<void> | null = null;
+let skillReportRequest: Promise<void> | null = null, skillReportAgain = false, skillReportRevision = 0;
 let skillAbort = new AbortController();
 function stopPollingSkillResults() { if (skillPollTimer) clearTimeout(skillPollTimer); skillPollTimer = null; }
 function needsSkillRefresh(): boolean {
   return Object.keys(pendingSkillObservations).length > 0 || scopedSkillResults.value.some(skill => skill.skill_status === '已完成' && !hasSkillMatchError(skill) && SKILL_MODE_KEYS.some(key => {
     const result = skillModeResult(skill, key);
-    return !isSkillModeTerminal(result) || (result?.status === 'completed' && result.report_status === 'pending');
-  }));
+    return !isSkillModeTerminal(result);
+  })) || [...skillResults.value, ...(activeSkill.value ? [activeSkill.value] : [])].some(skill => SKILL_MODE_KEYS.some(key => skillModeResult(skill, key)?.report_status === 'pending'));
 }
 function scheduleSkillRefresh() {
   stopPollingSkillResults();
-  if (!skillSubmitting.value && !skillDisposed && evalTab.value === 'skill' && skillScopeValid() && needsSkillRefresh() && !skillResultsError.value) {
+  if (!skillSubmitting.value && !skillReportsLoading.value && !skillDisposed && evalTab.value === 'skill' && skillScopeValid() && needsSkillRefresh() && !skillResultsError.value) {
     skillPollTimer = setTimeout(() => void loadSkillResults(true), 10000);
   }
 }
 async function findScopedSkillResults(ids: Set<string>, scope: ReturnType<typeof skillScopeParams>, signal: AbortSignal): Promise<SkillEvalSkillResult[]> {
   const found: SkillEvalSkillResult[] = [];
-  for (let page = 1; ids.size; page++) {
-    const res = await kcService.getSkillEvalResults({ ...scope, page, page_size: 100 }, signal);
-    (res.items || []).forEach(skill => { if (ids.delete(skill.skill_id)) found.push(skill); });
-    if (!res.items?.length || page * 100 >= res.total) break;
+  const requested = [...ids];
+  for (let start = 0; start < requested.length; start += 100) {
+    const res = await kcService.getSkillEvalResults({ ...scope, skill_ids: requested.slice(start, start + 100), page: 1, page_size: 100, include_reports: false }, signal);
+    found.push(...(res.items || []));
   }
   return found;
+}
+function preserveLoadedSkillReports(items: SkillEvalSkillResult[]): SkillEvalSkillResult[] {
+  const previous = new Map(scopedSkillResults.value.map(skill => [skill.skill_id, skill]));
+  return items.map(skill => {
+    const before = previous.get(skill.skill_id);
+    SKILL_MODE_KEYS.forEach(mode => {
+      const current = skillModeResult(skill, mode), old = before ? skillModeResult(before, mode) : null;
+      // 只复用同一任务、更新时间和版本的已就绪报告；未就绪/失败的报告仍可重试。
+      if (Date.now() - (skillReportLoadedAt.get(skill.skill_id) || 0) < 60000 && current?.report_status === 'unloaded' && hasReadySkillReport(old) && current.external_task_id === old?.external_task_id && current.updated_at === old?.updated_at && current.version === old?.version) {
+        current.report = old!.report; current.report_status = 'ready'; current.report_error = null;
+      }
+    });
+    return skill;
+  });
+}
+function updateActiveSkillResult() {
+  if (!activeSkill.value) return;
+  const latest = displayedSkillResults.value.find(skill => skill.skill_id === activeSkill.value?.skill_id);
+  if (latest) activeSkill.value = latest;
+  else closeSkillDrawer();
+}
+function hydrateVisibleSkillReports(): Promise<void> {
+  if (skillDisposed || !skillScopeValid() || evalTab.value !== 'skill') return Promise.resolve();
+  if (skillReportRequest) { skillReportAgain = true; return skillReportRequest; }
+  const context = skillContext, revision = skillReportRevision, scope = skillScopeParams(), signal = skillAbort.signal;
+  skillReportsLoading.value = true;
+  stopPollingSkillResults();
+  skillReportRequest = (async () => {
+    while (context === skillContext && revision === skillReportRevision && !skillDisposed && !signal.aborted) {
+      const wanted = new Set([...skillResults.value.map(skill => skill.skill_id), ...Object.keys(pendingSkillObservations), ...(activeSkill.value ? [activeSkill.value.skill_id] : [])]);
+      const candidates = new Map([...observedSkillResults.value, ...scopedSkillResults.value].map(skill => [skill.skill_id, skill]));
+      const ids = [...candidates.values()].filter(skill => wanted.has(skill.skill_id) && SKILL_MODE_KEYS.some(mode => skillModeResult(skill, mode)?.report_status === 'unloaded')).map(skill => skill.skill_id).slice(0, 100);
+      if (!ids.length) break;
+      const res = await kcService.getSkillEvalResults({ ...scope, skill_ids: ids, page: 1, page_size: 100, include_reports: true }, signal);
+      if (context !== skillContext || revision !== skillReportRevision || skillDisposed || signal.aborted) return;
+      const requested = new Set(ids), loaded = new Map((res.items || []).map(skill => [skill.skill_id, skill]));
+      const merge = (items: SkillEvalSkillResult[]) => items.flatMap(skill => requested.has(skill.skill_id) ? (loaded.has(skill.skill_id) ? [loaded.get(skill.skill_id)!] : []) : [skill]);
+      scopedSkillResults.value = merge(scopedSkillResults.value);
+      observedSkillResults.value = merge(observedSkillResults.value).filter(skill => pendingSkillObservations[skill.skill_id]);
+      loaded.forEach((_, id) => skillReportLoadedAt.set(id, Date.now()));
+      observeSkillResults(res.items || []);
+      applySkillResultPage();
+      updateActiveSkillResult();
+      // 报告读取失败使某行被过滤时，继续补齐当前页新进入的行。
+    }
+  })().catch(error => {
+    if (context === skillContext && revision === skillReportRevision && !skillDisposed && !signal.aborted) skillResultsError.value = `当前页报告加载失败，已保留列表：${skillErrorText(error)}`;
+  }).finally(() => {
+    skillReportRequest = null;
+    if (context === skillContext) skillReportsLoading.value = false;
+    if (skillReportAgain && !skillDisposed) { skillReportAgain = false; void hydrateVisibleSkillReports(); }
+    else scheduleSkillRefresh();
+  });
+  return skillReportRequest;
 }
 function loadSkillResults(quiet = false): Promise<void> {
   if (!skillScopeValid() || skillDisposed || evalTab.value !== 'skill') return Promise.resolve();
@@ -1406,20 +1467,22 @@ function loadSkillResults(quiet = false): Promise<void> {
       const all = await collectScopedSkillResults(scope, params.keyword, signal);
       if (context !== skillContext || skillDisposed || queryKey !== JSON.stringify({ ...skillScopeParams(), keyword: skillFilter.keyword.trim() || undefined })) return;
       // 仅在所有目录页读取成功后替换快照，失败时保留此前完整结果。
-      scopedSkillResults.value = all;
+      skillReportRevision++;
+      scopedSkillResults.value = preserveLoadedSkillReports(all);
+      observedSkillResults.value = [];
       skillResultsError.value = '';
       observeSkillResults(all);
       applySkillResultPage();
-      if (activeSkill.value) {
-        const latest = displayedSkillResults.value.find(skill => skill.skill_id === activeSkill.value?.skill_id);
-        if (latest) activeSkill.value = latest;
-        else closeSkillDrawer();
-      }
+      updateActiveSkillResult();
+      void hydrateVisibleSkillReports();
       const missing = new Set(Object.keys(pendingSkillObservations).filter(id => !all.some(skill => skill.skill_id === id)));
       if (missing.size) {
         const extra = await findScopedSkillResults(missing, scope, signal);
         if (context !== skillContext || skillDisposed) return;
         observeSkillResults(extra);
+        // 搜索条件可能隐藏所选 Skill；仍跟踪它们的新任务与报告。
+        observedSkillResults.value = extra.filter(skill => pendingSkillObservations[skill.skill_id]);
+        void hydrateVisibleSkillReports();
       }
     } catch (error) {
       if (context === skillContext && !skillDisposed && !signal.aborted) skillResultsError.value = `刷新失败，已保留上次结果：${skillErrorText(error)}`;
@@ -1431,19 +1494,20 @@ function loadSkillResults(quiet = false): Promise<void> {
   });
   return skillResultsRequest;
 }
-function onSkillFilterChange() { skillPage.value = 1; skillJumpPage.value = 1; closeSkillDrawer(); void loadSkillResults(); }
+function onSkillFilterChange() { skillReportRevision++; skillPage.value = 1; skillJumpPage.value = 1; closeSkillDrawer(); void loadSkillResults(); }
 function clearSkillFilter() { skillFilter.keyword = ''; onSkillFilterChange(); }
 function goToSkillPage(page: number | string) {
   const value = Number(page); if (!Number.isInteger(value) || value < 1 || value > skillTotalPages.value || value === skillPage.value) return;
-  skillPage.value = value; skillJumpPage.value = value; closeSkillDrawer(); applySkillResultPage();
+  skillPage.value = value; skillJumpPage.value = value; closeSkillDrawer(); applySkillResultPage(); void hydrateVisibleSkillReports();
 }
-function onSkillPageSizeChange() { skillPage.value = 1; skillJumpPage.value = 1; closeSkillDrawer(); applySkillResultPage(); }
+function onSkillPageSizeChange() { skillPage.value = 1; skillJumpPage.value = 1; closeSkillDrawer(); applySkillResultPage(); void hydrateVisibleSkillReports(); }
 function skillResultKey(skillId: string): string { return JSON.stringify([activeSkillMode.value, skillId]); }
 function selectSkillReportVersion(id: string, version: string) { selectedSkillReportVersions.value[skillResultKey(id)] = version; }
 function selectSkillResultMode(mode: string) { activeSkillMode.value = normalizeSkillMode(mode); }
 function openSkillDrawer(skill: SkillEvalSkillResult, mode = 'STATIC') {
   skillDrawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   activeSkill.value = skill; activeSkillMode.value = mode; skillDrawerVisible.value = true; selectedSkillReportVersions.value = {};
+  void hydrateVisibleSkillReports();
   nextTick(() => skillDrawerPanel.value?.focus());
 }
 function closeSkillDrawer() {
@@ -2310,10 +2374,11 @@ onBeforeUnmount(() => {
   stopPollingProcessing(); stopPollingSkillResults();
 });
 watch(() => props.scope, () => {
-  skillContext++; skillAbort.abort(); skillAbort = new AbortController(); stopPollingSkillResults();
+  skillContext++; skillReportRevision++; skillAbort.abort(); skillAbort = new AbortController(); stopPollingSkillResults();
   pickerSession++; pickerRequest++; selectingAllSkills.value = false; skillListLoading.value = false;
   evalModalVisible.value = false; skillForm.selected.clear(); evaluableSkills.value = []; skillListTotal.value = 0;
-  closeSkillDrawer(); scopedSkillResults.value = []; skillResults.value = []; skillTotal.value = 0; skillResultsError.value = ''; skillResultsLoading.value = false;
+  closeSkillDrawer(); scopedSkillResults.value = []; skillResults.value = []; skillTotal.value = 0; skillResultsError.value = ''; skillResultsLoading.value = false; skillReportsLoading.value = false;
+  observedSkillResults.value = []; skillReportLoadedAt.clear();
   skillSubmission.value = null; skillObservationNotice.value = ''; Object.keys(pendingSkillObservations).forEach(id => delete pendingSkillObservations[id]);
   skillPage.value = 1; skillJumpPage.value = 1;
   if (scopeValid()) { evalPage.value = 1; evalJumpPage.value = 1; loadEvalData(); }
@@ -3923,3 +3988,4 @@ tbody tr:hover td { background: #f8f9fd; }
 .eval-modal-overlay { z-index: 4000; }
 
 </style>
+

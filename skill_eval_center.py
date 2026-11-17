@@ -23,7 +23,8 @@ class SkillCatalog(Protocol):
     def query_scope_offering_ids(self, offering_id=None, pdu=None, department=None): ...
     def query_product_by_offering_id(self, offering_id): ...
     def query_evaluable_skills(self, offering_ids, keyword=None, page=1, page_size=10): ...
-    def query_skill_eval_result_skills(self, offering_ids, keyword=None, page=1, page_size=10): ...
+    def query_skill_eval_result_skills(self, offering_ids, keyword=None, page=1, page_size=10,
+                                      skill_ids=None): ...
     def query_skill_eval_name_owners(self, skill_names): ...
     def query_skill_infos_by_ids(self, skill_ids): ...
     def query_skill_scope_products(self, skill_ids, offering_ids): ...
@@ -42,6 +43,7 @@ class HarnessGateway(Protocol):
 class EvaluationGateway(Protocol):
     def trigger(self, mode, skill, creator, model=None, agent=None, description=None): ...
     def fetch_all_tasks(self, skill_name=None, eval_mode=None): ...
+    def fetch_latest_tasks(self, skill_names): ...
     def fetch_report(self, mode, external_task_id, updated_at=None): ...
 
 
@@ -273,6 +275,25 @@ class ExpiringReadCache:
         return copy.deepcopy(value)
 
 
+class ThreadLocalHttpTransport:
+    """每个工作线程复用连接；requests.Session 不在线程之间共享。"""
+
+    def __init__(self, session_factory):
+        self.session_factory = session_factory
+        self._local = threading.local()
+
+    def _session(self):
+        if not hasattr(self._local, "session"):
+            self._local.session = self.session_factory()
+        return self._local.session
+
+    def get(self, url, **kwargs):
+        return self._session().get(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._session().post(url, **kwargs)
+
+
 class SkillEvaluationHttpClient:
     def __init__(self, http: HttpTransport, server_url, modes: ModeRegistry,
                  timeout, logger, task_cache_ttl=10, report_cache_ttl=300,
@@ -288,6 +309,8 @@ class SkillEvaluationHttpClient:
         self.empty_report_ttl = empty_report_ttl
         self.page_workers = max(1, int(page_workers))
         self.task_cache = ExpiringReadCache(max_entries=32)
+        self.task_index_cache = ExpiringReadCache(max_entries=32)
+        self._page_executor = ThreadPoolExecutor(max_workers=self.page_workers)
         self.report_cache = ExpiringReadCache(max_entries=report_cache_max_entries,
                                              max_bytes=report_cache_max_bytes)
         self._report_slots = threading.BoundedSemaphore(max(1, int(report_concurrency)))
@@ -313,6 +336,7 @@ class SkillEvaluationHttpClient:
         finally:
             # 超时也可能已创建任务；随后查询应绕过本进程的旧任务快照。
             self.task_cache.clear()
+            self.task_index_cache.clear()
         self.logger.info(f"Skill 评测服务响应: mode={mode}, skill_id={skill.get('skill_id')}, "
                          f"status_code={resp.status_code}, text={resp.text[:1000]}")
         resp.raise_for_status()
@@ -363,11 +387,10 @@ class SkillEvaluationHttpClient:
                 last_page = (expected + effective_size - 1) // effective_size
                 if last_page > 10000:
                     raise RuntimeError("评测服务任务分页超过上限")
-                with ThreadPoolExecutor(max_workers=self.page_workers) as executor:
-                    for data in executor.map(
-                            lambda page: self._fetch_task_page(page, effective_size, filters),
-                            range(next_page, last_page + 1)):
-                        merge(data)
+                for data in self._page_executor.map(
+                        lambda page: self._fetch_task_page(page, effective_size, filters),
+                        range(next_page, last_page + 1)):
+                    merge(data)
                 next_page = last_page + 1
             if len(tasks) < expected:
                 raise RuntimeError("评测服务分页重复或发生变更，任务列表不完整，请刷新重试")
@@ -417,6 +440,40 @@ class SkillEvaluationHttpClient:
 
         return self.report_cache.get(key, fetch, ttl=self.report_cache_ttl,
                                      empty_ttl=self.empty_report_ttl, error_ttl=2)
+
+    def fetch_latest_tasks(self, skill_names):
+        """缓存每个名称/模式的最新记录，后续目录页不再复制、扫描全部任务历史。"""
+        names = set(skill_names)
+        name_filter = next(iter(names)) if len(names) == 1 else None
+
+        def build_index():
+            latest, invalid_names = {}, set()
+            for task in self._collect_tasks(100, {"skill_name": name_filter}):
+                task_modes = set(task.get("eval_modes") or ())
+                task_modes.update((task.get("mode_states") or {}).keys())
+                task_modes.intersection_update(RESULT_MODES)
+                name = task.get("skill_name")
+                if not name or not task_modes:
+                    continue
+                order = _task_order(task)
+                if order[0] == float("-inf"):
+                    invalid_names.add(name)
+                modes = latest.setdefault(name, {})
+                for mode in task_modes:
+                    if mode not in modes or order > _task_order(modes[mode]):
+                        modes[mode] = task
+            return {"latest": latest, "invalid_names": list(invalid_names)}
+
+        index = self.task_index_cache.get(
+            (self.server_url(), name_filter, "all"), build_index,
+            ttl=self.task_cache_ttl, error_ttl=1)
+        if names.intersection(index["invalid_names"]):
+            raise RuntimeError("匹配的评测任务缺少有效 updated_at/created_at，无法判断最新记录")
+        tasks = {}
+        for name in names:
+            for task in index["latest"].get(name, {}).values():
+                tasks[str(task["task_id"])] = task
+        return list(tasks.values())
 
 
 class HarnessHttpClient:
@@ -624,6 +681,7 @@ class SkillEvaluationService:
         self.states = states
         self.logger = logger
         self.max_workers = max(1, int(max_workers))
+        self._report_executor = ThreadPoolExecutor(max_workers=self.max_workers)
 
     def _validate_scope(self, offering_id=None, pdu=None, department=None):
         if sum(bool(value) for value in (offering_id, pdu, department)) != 1:
@@ -697,7 +755,8 @@ class SkillEvaluationService:
             return pair, None, "获取报告失败，请稍后刷新"
 
     def get_skill_eval_results(self, offering_id=None, pdu=None, department=None,
-                               keyword=None, page=1, page_size=10):
+                               keyword=None, page=1, page_size=10,
+                               include_reports=True, skill_ids=None):
         """查询目录开发已完成的 Skill；分页及 total 由目录状态过滤后的查询提供。
 
         每个维度单独选择最新任务，未评测也占一个固定维度。
@@ -705,11 +764,16 @@ class SkillEvaluationService:
         不按 creator 过滤；同一 Skill 的不同维度允许来自不同任务、不同版本。
         最新任务失败/运行中时不回退旧的成功报告，以免把旧结果当成新结果。
         """
+        started = time.monotonic()
         offering_ids = self._validate_scope(offering_id, pdu, department)
         page = max(int(page), 1)
         page_size = min(max(int(page_size), 1), 100)
-        result = self.catalog.query_skill_eval_result_skills(
-            offering_ids, keyword=keyword, page=page, page_size=page_size)
+        filters = {"keyword": keyword, "page": page, "page_size": page_size}
+        if skill_ids is not None:
+            if len(skill_ids) > 100:
+                raise ValueError("skill_ids 一次最多传 100 个")
+            filters["skill_ids"] = list(dict.fromkeys(skill_ids))
+        result = self.catalog.query_skill_eval_result_skills(offering_ids, **filters)
         result = dict(result)
         skills = []
         for info in result.get("items", []):
@@ -741,9 +805,13 @@ class SkillEvaluationService:
             return result
 
         latest = {}
+        catalog_done = time.monotonic()
         # 只匹配一个名称时利用服务端模糊筛选，随后仍按名称精确关联。
         name_filter = next(iter(by_name)) if len(by_name) == 1 else None
-        for task in self.gateway.fetch_all_tasks(skill_name=name_filter):
+        fetch_latest = getattr(self.gateway, "fetch_latest_tasks", None)
+        tasks = (fetch_latest(by_name) if callable(fetch_latest) else
+                 self.gateway.fetch_all_tasks(skill_name=name_filter))
+        for task in tasks:
             name = task.get("skill_name")
             if name not in by_name:
                 continue
@@ -758,6 +826,7 @@ class SkillEvaluationService:
                 if key not in latest or _task_order(task) > _task_order(latest[key]):
                     latest[key] = task
 
+        tasks_done = time.monotonic()
         pending_reports = {}
         for (name, mode), task in latest.items():
             item = by_name[name]
@@ -765,19 +834,27 @@ class SkillEvaluationService:
             value = self._mode_result(task, mode)
             item["modes"][mode] = value
             if value["status"] == "completed":
-                pending_reports.setdefault(
-                    (mode, task["task_id"], str(task.get("updated_at") or "")), []).append(value)
+                value["report_status"] = "unloaded"
+                if include_reports:
+                    pending_reports.setdefault(
+                        (mode, task["task_id"], str(task.get("updated_at") or "")), []).append(value)
         # 只读当前页的最新报告，避免对所有历史任务逐个读取报告。
         if pending_reports:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                for pair, report, error in executor.map(self._load_report, pending_reports):
-                    for value in pending_reports[pair]:
-                        value["report"] = report
-                        value["report_error"] = error
-                        value["report_status"] = ("error" if error else
-                                                  "ready" if report is not None else "pending")
+            for pair, report, error in self._report_executor.map(self._load_report, pending_reports):
+                for value in pending_reports[pair]:
+                    value["report"] = report
+                    value["report_error"] = error
+                    value["report_status"] = ("error" if error else
+                                              "ready" if report is not None else "pending")
         for item in skills:
             item["status"] = _skill_status(item["modes"])
+        finished = time.monotonic()
+        self.logger.info(
+            f"Skill 评测结果查询耗时: include_reports={include_reports}, skills={len(skills)}, "
+            f"reports={len(pending_reports)}, catalog_ms={(catalog_done - started) * 1000:.0f}, "
+            f"tasks_ms={(tasks_done - catalog_done) * 1000:.0f}, "
+            f"reports_ms={(finished - tasks_done) * 1000:.0f}, "
+            f"total_ms={(finished - started) * 1000:.0f}")
         return result
 
     def create_skill_eval_batch(self, skill_ids, modes, offering_id=None, pdu=None,
@@ -880,7 +957,7 @@ def build_runtime():
     server_url = ServerUrlProvider(_read_config, lambda: SkillEvalConfig.SERVER_URL, logger)
     timeout = lambda: SkillEvalConfig.HTTP_TIMEOUT
     gateway = SkillEvaluationHttpClient(
-        requests, server_url, modes, timeout, logger,
+        ThreadLocalHttpTransport(requests.Session), server_url, modes, timeout, logger,
         task_cache_ttl=getattr(SkillEvalConfig, "TASK_CACHE_TTL", 10),
         report_cache_ttl=getattr(SkillEvalConfig, "REPORT_CACHE_TTL", 300),
         empty_report_ttl=getattr(SkillEvalConfig, "EMPTY_REPORT_CACHE_TTL", 3),
@@ -915,10 +992,12 @@ def get_skill_eval_modes():
 
 
 def get_skill_eval_results(offering_id=None, pdu=None, department=None,
-                           keyword=None, page=1, page_size=10):
+                           keyword=None, page=1, page_size=10,
+                           include_reports=True, skill_ids=None):
     return get_runtime().service.get_skill_eval_results(
         offering_id=offering_id, pdu=pdu, department=department,
-        keyword=keyword, page=page, page_size=page_size)
+        keyword=keyword, page=page, page_size=page_size,
+        include_reports=include_reports, skill_ids=skill_ids)
 
 
 def create_skill_eval_batch(skill_ids, modes, offering_id=None, pdu=None,
@@ -953,3 +1032,4 @@ def start_worker():
 def _poll_once():
     """旧诊断入口兼容：本地任务已停用，无需轮询。"""
     return None
+
