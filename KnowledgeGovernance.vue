@@ -178,7 +178,6 @@
             <div class="eval-filter-field"><span>Skill 名称 / 描述</span><input v-model="skillFilter.keyword" placeholder="搜索当前范围的 Skill" @keyup.enter="onSkillFilterChange" /></div>
             <button class="eval-filter-clear" @click="onSkillFilterChange">搜索</button>
             <button v-if="skillFilter.keyword" class="eval-filter-clear" @click="clearSkillFilter">清除</button>
-            <button class="eval-filter-clear" :disabled="skillResultsLoading" @click="loadSkillResults()">{{ skillResultsLoading ? '刷新中…' : '刷新结果' }}</button>
             <span class="skill-list-hint">仅展示评测中或已有报告的 Skill</span>
             <span v-if="skillReportsLoading" class="skill-list-hint" role="status">正在加载当前页报告…</span>
           </div>
@@ -186,7 +185,7 @@
           <p v-if="skillObservationNotice" class="skill-report-notice">{{ skillObservationNotice }}</p>
           <div v-if="skillSubmission" class="skill-submission-notice" role="status">
             <strong>已确认提交 {{ skillSubmission.submitted_count }} / {{ skillSubmission.total_count }} 项</strong>
-            <span v-if="skillSubmission.unconfirmed_count">，{{ skillSubmission.unconfirmed_count }} 项未确认。请先刷新结果，再决定是否重试。</span>
+            <span v-if="skillSubmission.unconfirmed_count">，{{ skillSubmission.unconfirmed_count }} 项未确认。请先确认结果，再决定是否重试。</span>
             <span v-else>，结果会自动刷新。</span>
             <details v-if="submissionIssues.length"><summary>查看未确认项</summary><p v-for="item in submissionIssues" :key="item.key">{{ item.name }} · {{ skillModeLabel(item.mode) }}：{{ item.error }}</p></details>
             <p v-if="Object.keys(pendingSkillObservations).length">正在等待所选模式的新记录或报告；新记录出现前仍可能显示上次结果。</p>
@@ -195,9 +194,9 @@
           <div v-if="skillResultsError" class="skill-state skill-state--error" role="alert">{{ skillResultsError }} <button class="skill-text-button" :disabled="skillResultsLoading" @click="loadSkillResults()">重试</button></div>
           <p v-if="skillResultsLoading && !skillResults.length" class="empty-text" role="status">正在加载 Skill…</p>
           <div v-if="skillResults.length" class="table-wrap" :aria-busy="skillResultsLoading">
-            <table class="asset-table eval-table skill-results-table" v-col-resize data-col-resize-key="kg-skill-results-v2">
-              <colgroup><col style="width:24%" /><col v-for="key in SKILL_MODE_KEYS" :key="key" style="width:21%" /><col style="width:13%" /></colgroup>
-              <thead class="asset-table-head"><tr><th>Skill</th><th v-for="key in SKILL_MODE_KEYS" :key="key">{{ skillModeLabel(key) }}</th><th>操作</th></tr></thead>
+            <table class="asset-table eval-table skill-results-table" v-col-resize data-col-resize-key="kg-skill-results-v3">
+              <colgroup><col style="width:22%" /><col v-for="key in SKILL_MODE_KEYS" :key="key" style="width:18%" /><col style="width:16%" /><col style="width:8%" /></colgroup>
+              <thead class="asset-table-head"><tr><th>Skill</th><th v-for="key in SKILL_MODE_KEYS" :key="key">{{ skillModeLabel(key) }}</th><th :aria-sort="skillSortOrder === 'desc' ? 'descending' : 'ascending'"><button type="button" class="skill-update-sort" :aria-label="skillSortOrder === 'desc' ? '更新时间：最新在前，点击切换为最早在前' : '更新时间：最早在前，点击切换为最新在前'" @click="toggleSkillTimeSort">更新时间 <span aria-hidden="true">{{ skillSortOrder === 'desc' ? '↓' : '↑' }}</span></button></th><th>操作</th></tr></thead>
               <tbody><tr v-for="skill in skillResults" :key="skill.skill_id" class="hierarchy-row hierarchy-row-product clickable-row" :class="{ 'row-active': activeSkill?.skill_id === skill.skill_id }" @click="openSkillDrawer(skill)">
                 <td><button class="skill-name-link" @click.stop="openSkillDrawer(skill)">{{ skill.skill_name || skill.name || '未命名 Skill' }}</button><p v-if="hasSkillMatchError(skill)" class="skill-match-error">{{ skill.match_error || '评测记录关联异常' }}</p></td>
                 <td v-for="key in SKILL_MODE_KEYS" :key="key"><button type="button" class="skill-mode-cell" @click.stop="openSkillDrawer(skill, key)">
@@ -207,7 +206,8 @@
                   <span class="skill-mode-version">评测版本 {{ skillModeVersion(skill, key) }}</span>
                   <span v-for="entry in skillModeGlance(skill, key)" :key="entry.key" class="skill-cell-metric">{{ entry.label }} <b>{{ entry.value }}</b><small v-if="entry.detail">（{{ entry.detail }}）</small></span>
                 </button></td>
-                <td><div class="skill-row-actions"><button type="button" class="skill-text-button" @click.stop="openSkillDrawer(skill)">查看结果</button><button type="button" class="skill-text-button" :disabled="skill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(skill)" @click.stop="openSkillEvaluationFor(skill)">发起评测</button></div></td>
+                <td class="skill-updated-at" title="北京时间">{{ skillLatestUpdated(skill) }}</td>
+                <td><div class="skill-row-actions"><button type="button" class="skill-text-button" :disabled="skill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(skill)" @click.stop="openSkillEvaluationFor(skill)">发起评测</button></div></td>
               </tr></tbody>
             </table>
           </div>
@@ -672,7 +672,7 @@
               <div v-if="activeSkill" class="drawer-body skill-drawer-body" tabindex="0" aria-label="评测结果滚动区域" :aria-busy="skillResultsLoading">
                 <section class="skill-overview">
                   <div class="skill-section-heading"><h4>评测结果</h4><span class="status-pill" :class="activeSkill.status">{{ skillStatusLabel(activeSkill.status) }}</span></div>
-                  <div class="skill-directory-meta"><span>最近更新 {{ skillLatestUpdated(activeSkill) }}</span><button type="button" class="skill-text-button" :disabled="skillResultsLoading" @click="loadSkillResults()">{{ skillResultsLoading ? '刷新中…' : '刷新结果' }}</button><button type="button" class="skill-text-button" :disabled="activeSkill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(activeSkill)" @click="openSkillEvaluationFor(activeSkill)">发起评测</button></div>
+                  <div class="skill-directory-meta"><span title="北京时间">最近更新 {{ skillLatestUpdated(activeSkill) }}</span><button type="button" class="skill-text-button" :disabled="activeSkill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(activeSkill)" @click="openSkillEvaluationFor(activeSkill)">发起评测</button></div>
                   <p class="skill-overview-note">三种模式分别展示最新结果及其评测版本；执行完成后，评分和用例判定以报告为准。</p>
                   <p v-if="hasSkillMatchError(activeSkill)" class="skill-state skill-state--error">{{ activeSkill.match_error || '评测记录关联异常，请检查 Skill 名称。' }}</p>
                 </section>
@@ -699,7 +699,7 @@
                         <div v-if="reportSummaryEntries(row.result.report, activeSkillMode).length" class="skill-report-summary">
                           <div v-for="entry in reportSummaryEntries(row.result.report, activeSkillMode)" :key="entry.key" class="skill-report-metric"><span>{{ entry.label }}</span><strong>{{ entry.value }}</strong><small v-if="entry.detail">（{{ entry.detail }}）</small></div>
                         </div>
-                        <p v-if="activeSkillMode === 'TRIGGER' && !triggerCaseStats(row.result.report).available" class="skill-report-notice">报告已返回，但尚未识别到当前模式的用例明细或通过数量，暂不显示统计值。请稍后刷新结果。</p>
+                        <p v-if="activeSkillMode === 'TRIGGER' && !triggerCaseStats(row.result.report).available" class="skill-report-notice">报告已返回，但尚未识别到当前模式的用例明细或通过数量，暂不显示统计值。请稍后重新搜索查看结果。</p>
                         <p v-else-if="row.result.status !== 'completed'" class="skill-overview-note">以下统计基于已返回的报告内容；任务当前状态：{{ skillModeStatusLabel(row.result.status) }}。</p>
                         <p v-if="activeSkillMode === 'TRIGGER' && triggerCaseStats(row.result.report).total" class="skill-overview-note">按 results 中的 passed 统计；未通过表示用例判定未通过，与执行失败分别统计。<template v-if="triggerCaseStats(row.result.report).unknown"> 未判定用例不计入通过率分母。</template></p>
                         <div v-if="activeSkillMode === 'TRIGGER' && triggerCaseStats(row.result.report).total" class="skill-trigger-breakdown">
@@ -788,7 +788,6 @@
                       </template>
                       <div v-else class="skill-state" :class="{ 'skill-state--error': row.result?.status === 'failed' || row.result?.report_status === 'error' }" role="status">
                         <p>{{ skillModeNotice(row.result) }}</p>
-                        <button v-if="row.result?.report_status === 'error' || row.result?.status === 'completed'" class="skill-text-button" :disabled="skillResultsLoading" @click="loadSkillResults()">刷新结果</button>
                       </div>
                       <div class="skill-directory-meta"><span>评测版本 {{ row.result?.version || '—' }}</span><span>开始时间 {{ row.result?.created_at || '—' }}</span><span>更新时间 {{ row.result?.updated_at || '—' }}</span></div>
                     </div>
@@ -986,10 +985,6 @@
                 </div>
               </div>
             </div>
-            <details class="skill-modal-options"><summary>更多信息（选填）</summary>
-              <div class="eval-modal-field"><label class="eval-modal-label">调用者工号</label><input v-model="skillForm.creator" class="eval-mr-input" placeholder="当前用户工号，留空使用默认值" /></div>
-              <div class="eval-modal-field"><label class="eval-modal-label">评测说明</label><input v-model="skillForm.description" class="eval-mr-input" placeholder="补充本次评测说明" /></div>
-            </details>
             <p v-if="skillSubmitError" class="eval-modal-error" role="alert">{{ skillSubmitError }}</p>
           </fieldset>
 
@@ -1223,14 +1218,34 @@ function skillReportState(result: SkillEvalModeResult | null): string {
 }
 function skillModeNotice(result: SkillEvalModeResult | null): string {
   if (result?.status === 'failed') return `执行失败：${skillErrorText(result.error || '评测服务未返回失败原因')}`;
-  if (result?.report_status === 'error') return `报告读取失败：${result.report_error || '请刷新重试'}`;
+  if (result?.report_status === 'error') return `报告读取失败：${result.report_error || '请稍后重新搜索'}`;
   if (result?.report_status === 'unloaded') return '正在加载报告，请稍候。';
-  if (result?.status === 'completed' && !hasReadySkillReport(result)) return '执行已完成，报告生成中，可稍后刷新。';
+  if (result?.status === 'completed' && !hasReadySkillReport(result)) return '执行已完成，报告生成中，结果会自动更新。';
   return `${skillModeStatusLabel(result?.status || 'not_evaluated')}，暂无可查看的报告。`;
 }
 function skillModeVersion(skill: SkillEvalSkillResult, mode: string): string { return skillModeResult(skill, mode)?.version || '—'; }
+function skillTimestamp(value: string | null | undefined): number | null {
+  if (!value?.trim()) return null;
+  // 与后端一致：无时区的 ISO 时间按 UTC 比较，避免浏览器时区改变排序。
+  let normalized = value.trim().replace(' ', 'T');
+  if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized)) normalized += 'Z';
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+function skillLatestTimestamp(skill: SkillEvalSkillResult): number | null {
+  const timestamps = SKILL_MODE_KEYS.map(key => {
+    const result = skillModeResult(skill, key);
+    return skillTimestamp(result?.updated_at) ?? skillTimestamp(result?.created_at);
+  }).filter((value): value is number => value !== null);
+  return timestamps.length ? Math.max(...timestamps) : null;
+}
+const skillTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+});
 function skillLatestUpdated(skill: SkillEvalSkillResult): string {
-  return SKILL_MODE_KEYS.map(key => skillModeResult(skill, key)?.updated_at || '').filter(Boolean).sort().pop() || '—';
+  const timestamp = skillLatestTimestamp(skill);
+  return timestamp === null ? '—' : skillTimeFormatter.format(timestamp).replace(/\//g, '-');
 }
 function parsedSkillReports(skill: SkillEvalSkillResult, mode: string) {
   const source = skillModeResult(skill, mode);
@@ -1244,7 +1259,7 @@ function skillModeGlance(skill: SkillEvalSkillResult, mode: string): SkillReport
   return report ? reportSummaryEntries(report.report, mode).slice(0, 2) : [];
 }
 
-const skillForm = reactive({ modes: new Set<string>(['STATIC']), selected: new Set<string>(), keyword: '', creator: '', description: '' });
+const skillForm = reactive({ modes: new Set<string>(['STATIC']), selected: new Set<string>(), keyword: '' });
 const evaluableSkills = ref<SkillEvalSkillItem[]>([]);
 const skillListLoading = ref(false), skillListError = ref('');
 const skillListPage = ref(1), skillListPageSize = ref(10), skillListTotal = ref(0);
@@ -1307,7 +1322,15 @@ function shouldDisplaySkillResult(skill: SkillEvalSkillResult): boolean {
     return evaluating || generatingReport || hasReport;
   });
 }
-const displayedSkillResults = computed(() => scopedSkillResults.value.filter(shouldDisplaySkillResult));
+const skillSortOrder = ref<'desc' | 'asc'>('desc');
+const displayedSkillResults = computed(() => scopedSkillResults.value.filter(shouldDisplaySkillResult).sort((left, right) => {
+  const leftTime = skillLatestTimestamp(left), rightTime = skillLatestTimestamp(right);
+  // 缺少有效时间的记录始终放到末尾；同一时间按 ID 保持稳定顺序。
+  if (leftTime === null && rightTime !== null) return 1;
+  if (rightTime === null && leftTime !== null) return -1;
+  const difference = leftTime !== null && rightTime !== null ? leftTime - rightTime : 0;
+  return (skillSortOrder.value === 'desc' ? -difference : difference) || left.skill_id.localeCompare(right.skill_id);
+}));
 const skillResults = ref<SkillEvalSkillResult[]>([]), skillResultsLoading = ref(false), skillResultsError = ref('');
 const skillReportsLoading = ref(false);
 const skillFilter = reactive({ keyword: '' });
@@ -1345,7 +1368,7 @@ const selectedSkillReportVersions = ref<Record<string, string>>({});
 let skillDrawerTrigger: HTMLElement | null = null;
 const skillSubmission = ref<SkillEvalCreateResult | null>(null);
 const submissionIssues = computed(() => (skillSubmission.value?.items || []).flatMap(skill => Object.entries(skill.modes || {})
-    .filter(([, mode]) => mode.submission_status !== 'submitted').map(([key, mode]) => ({ key: `${skill.skill_id}:${key}`, name: skill.skill_name, mode: key, error: skillErrorText(mode.error || '未确认提交成功，请先刷新结果') }))));
+    .filter(([, mode]) => mode.submission_status !== 'submitted').map(([key, mode]) => ({ key: `${skill.skill_id}:${key}`, name: skill.skill_name, mode: key, error: skillErrorText(mode.error || '未确认提交成功，请先确认结果') }))));
 interface PendingSkillObservation { before: string; seen: boolean; expires: number; }
 const skillObservationNotice = ref('');
 const pendingSkillObservations = reactive<Record<string, Record<string, PendingSkillObservation>>>({});
@@ -1356,7 +1379,7 @@ function observeSkillResults(items: SkillEvalSkillResult[]) {
     Object.entries(modes).forEach(([mode, item]) => {
       if (Date.now() >= item.expires) {
         delete modes[mode];
-        skillObservationNotice.value = '部分所选模式尚未确认新结果，已停止等待。可手动刷新查看，请先确认结果再决定是否重试。';
+        skillObservationNotice.value = '部分所选模式尚未确认新结果，已停止等待。可重新搜索查看，请先确认结果再决定是否重试。';
       }
     });
     if (!Object.keys(modes).length) delete pendingSkillObservations[id];
@@ -1501,6 +1524,11 @@ function goToSkillPage(page: number | string) {
   skillPage.value = value; skillJumpPage.value = value; closeSkillDrawer(); applySkillResultPage(); void hydrateVisibleSkillReports();
 }
 function onSkillPageSizeChange() { skillPage.value = 1; skillJumpPage.value = 1; closeSkillDrawer(); applySkillResultPage(); void hydrateVisibleSkillReports(); }
+function toggleSkillTimeSort() {
+  skillSortOrder.value = skillSortOrder.value === 'desc' ? 'asc' : 'desc';
+  skillPage.value = 1; skillJumpPage.value = 1;
+  closeSkillDrawer(); applySkillResultPage(); void hydrateVisibleSkillReports();
+}
 function skillResultKey(skillId: string): string { return JSON.stringify([activeSkillMode.value, skillId]); }
 function selectSkillReportVersion(id: string, version: string) { selectedSkillReportVersions.value[skillResultKey(id)] = version; }
 function selectSkillResultMode(mode: string) { activeSkillMode.value = normalizeSkillMode(mode); }
@@ -1533,9 +1561,9 @@ async function submitSkillEvaluation() {
   if (skillSubmitting.value || selectingAllSkills.value || !skillScopeValid()) return;
   if (!skillForm.modes.size || !skillForm.selected.size) { skillSubmitError.value = '请至少选择一个 Skill 和一种评测模式。'; return; }
   const context = skillContext, scope = skillScopeParams(), ids = [...skillForm.selected], modes = [...skillForm.modes];
-  const creator = skillForm.creator.trim() || props.currentUserId || undefined, description = skillForm.description.trim() || undefined;
+  const creator = props.currentUserId || undefined;
   skillSubmitting.value = true; skillSubmitError.value = ''; skillObservationNotice.value = '';
-  const payload = { ...scope, skill_ids: ids, modes, creator, description };
+  const payload = { ...scope, skill_ids: ids, modes, creator };
   let submitted = false;
   try {
     stopPollingSkillResults();
@@ -1558,7 +1586,7 @@ async function submitSkillEvaluation() {
   } catch (error) {
     if (context !== skillContext || skillDisposed) return;
     const rejected = error && typeof error === 'object' && 'response' in error && (error as any).response?.status === 400;
-    skillSubmitError.value = rejected ? `提交校验失败：${skillErrorText(error)}` : submitted ? `已收到提交结果，刷新失败：${skillErrorText(error)}` : `未能确认提交结果：${skillErrorText(error)}。若请求超时，请先刷新结果再决定是否重试。`;
+    skillSubmitError.value = rejected ? `提交校验失败：${skillErrorText(error)}` : submitted ? `已收到提交结果，刷新失败：${skillErrorText(error)}` : `未能确认提交结果：${skillErrorText(error)}。若请求超时，请先确认结果再决定是否重试。`;
   } finally {
     skillSubmitting.value = false;
     if (!skillDisposed && context === skillContext) {
@@ -1982,7 +2010,6 @@ function openEvalModal() {
   evalForm.taskName = ''; evalForm.taskType = evalTab.value === 'skill' ? 'skill' : '';
   evalForm.taskSource = ''; evalForm.modes = new Set<string>(['baseline', 'full']); evalForm.hasReflow = false;
   skillForm.modes = new Set<string>(['STATIC']); skillForm.selected = new Set<string>(); skillForm.keyword = '';
-  skillForm.creator = props.currentUserId || ''; skillForm.description = '';
   skillListPage.value = 1; evaluableSkills.value = []; skillListTotal.value = 0; skillListError.value = ''; skillSubmitError.value = '';
   evalModalVisible.value = true;
   if (evalTab.value === 'skill') { void loadSkillModes(); void loadEvaluableSkills(); }
@@ -3694,6 +3721,10 @@ tbody tr:hover td { background: #f8f9fd; }
 .eval-scene-tabs button.active { color: #fff; background: #5269d4; box-shadow: 0 2px 8px rgba(82,105,212,.22); }
 
 /* ---- Skill 评测列表 ---- */
+.skill-update-sort { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.skill-update-sort span { color: #5269d4; }
+.skill-update-sort:focus-visible { outline: 2px solid #5269d4; outline-offset: 4px; border-radius: 2px; }
+.skill-results-table td.skill-updated-at { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .eval-table .eval-col-modes { width: 220px; }
 .eval-table .eval-col-progress { width: 140px; }
 .skill-mode-pill {
@@ -3960,7 +3991,7 @@ tbody tr:hover td { background: #f8f9fd; }
   .eval-summary-cards { grid-template-columns: 1fr; }
 }
 /* 按 Skill 展示的列表及结果状态 */
-.skill-results-table { min-width: 950px; table-layout: fixed; }
+.skill-results-table { min-width: 1180px; table-layout: fixed; }
 .skill-results-table td { vertical-align: top; white-space: normal; padding: 16px 14px; }
 .skill-name-link { border: 0; background: none; padding: 0; text-align: left; color: #3f5fc3; font-size: 14px; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
 .skill-mode-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
@@ -3982,9 +4013,6 @@ tbody tr:hover td { background: #f8f9fd; }
 .skill-result-detail { border-top: 0; }
 .eval-modal-btn:disabled, button.eval-filter-clear:disabled { opacity: .55; cursor: not-allowed; }
 .skill-modal-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
-.skill-modal-options { margin-top: 18px; color: #66758c; font-size: 13px; }
-.skill-modal-options summary { cursor: pointer; margin-bottom: 14px; }
-.skill-modal-options .eval-modal-field { margin-top: 12px; }
 .eval-modal-overlay { z-index: 4000; }
 
 </style>
