@@ -1723,7 +1723,7 @@ function reportSummaryEntries(report: Record<string, any> | null, mode = ''): Sk
   if (!report) return [];
   const priority: Record<string, string[]> = {
     STATIC: ['total', 'max', 'grade', 'percent', 'score'],
-    TRIGGER: ['passed_cases', 'failed_cases', 'pass_rate', 'total_cases', 'positive_trigger_rate', 'negative_false_trigger_rate', 'accuracy'],
+    TRIGGER: ['passed_cases', 'pass_rate', 'total_cases', 'positive_trigger_rate', 'negative_false_trigger_rate', 'accuracy'],
     QUALITY: ['score', 'overall_score', 'total_score', 'total', 'average_score', 'avg_score', 'grade', 'percent', 'pass_rate'],
   };
   const caseStats = triggerCaseStats(report);
@@ -1747,7 +1747,7 @@ function reportSummaryEntries(report: Record<string, any> | null, mode = ''): Sk
     entries.push(...summary);
     if (reportDimensions(report).length) entries.push({ key: 'dimension_count', label: '评分维度', value: String(reportDimensions(report).length) });
   }
-  return [...derived, ...entries].map(entry => {
+  return [...derived, ...entries].filter(entry => mode !== 'TRIGGER' || entry.key !== 'failed_cases').map(entry => {
     // 百分比和计数分别排版，避免「90.00%（9/10）」在窄卡片中随意断行。
     const rate = entry.value.match(/^\s*(\d+(?:\.\d+)?%|—)\s*[（(]\s*(\d+\s*\/\s*\d+)\s*[）)]\s*$/);
     return rate ? { ...entry, value: rate[1], detail: rate[2].replace(/\s/g, '') } : entry;
