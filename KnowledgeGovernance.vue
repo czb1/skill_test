@@ -202,7 +202,7 @@
                 <td v-for="key in SKILL_MODE_KEYS" :key="key"><button type="button" class="skill-mode-cell" @click.stop="openSkillDrawer(skill, key)">
                   <span class="skill-mode-status" :class="skillModeResult(skill, key)?.status || 'not_evaluated'">{{ hasSkillMatchError(skill) ? '关联异常' : skillModeStatusLabel(skillModeResult(skill, key)?.status || 'not_evaluated') }}</span>
                   <span v-if="isAwaitingSkillSource(skill.skill_id, key)" class="skill-observation-note">等待新记录</span>
-                  <span v-if="!hasSkillMatchError(skill) && skillModeResult(skill, key)?.status === 'completed'" class="skill-report-state" :class="{ 'has-error': skillModeResult(skill, key)?.report_status === 'error' }">{{ skillReportState(skillModeResult(skill, key)) }}</span>
+                  <span v-if="!hasSkillMatchError(skill) && skillModeResult(skill, key)?.status === 'completed' && skillReportState(skillModeResult(skill, key))" class="skill-report-state" :class="{ 'has-error': skillModeResult(skill, key)?.report_status === 'error' }">{{ skillReportState(skillModeResult(skill, key)) }}</span>
                   <span class="skill-mode-version">评测版本 {{ skillModeVersion(skill, key) }}</span>
                   <span v-for="entry in skillModeGlance(skill, key)" :key="entry.key" class="skill-cell-metric">{{ entry.label }} <b>{{ entry.value }}</b><small v-if="entry.detail">（{{ entry.detail }}）</small></span>
                 </button></td>
@@ -681,7 +681,7 @@
                     <span class="skill-mode-card-top"><span class="skill-mode-icon">{{ skillModeIcon(mode.key) }}</span><strong>{{ mode.label }}</strong></span>
                     <span class="skill-mode-description">{{ skillModeDescription(mode.key) }}</span>
                     <span class="skill-mode-status" :class="skillModeResult(activeSkill, mode.key)?.status || 'not_evaluated'">{{ hasSkillMatchError(activeSkill) ? '关联异常' : skillModeStatusLabel(skillModeResult(activeSkill, mode.key)?.status || 'not_evaluated') }}</span>
-                    <span class="skill-mode-card-foot"><span>{{ skillReportState(skillModeResult(activeSkill, mode.key)) }}</span><span>版本 {{ skillModeVersion(activeSkill, mode.key) }}</span></span>
+                    <span class="skill-mode-card-foot"><span v-if="skillReportState(skillModeResult(activeSkill, mode.key))">{{ skillReportState(skillModeResult(activeSkill, mode.key)) }}</span><span>版本 {{ skillModeVersion(activeSkill, mode.key) }}</span></span>
                     <span v-if="isAwaitingSkillSource(activeSkill.skill_id, mode.key)" class="skill-observation-note">等待本次评测的新记录</span>
                   </button>
                 </div>
@@ -1213,7 +1213,7 @@ function hasReadySkillReport(result: SkillEvalModeResult | null): boolean {
 function skillReportState(result: SkillEvalModeResult | null): string {
   if (!result) return '未评测';
   if (result.status === 'completed') {
-    if (hasReadySkillReport(result)) return '报告已就绪';
+    if (hasReadySkillReport(result)) return '';
     if (result.report_status === 'error') return '报告读取失败';
     return '报告生成中';
   }
