@@ -806,7 +806,7 @@
 
     <!-- 新建评测任务弹窗 -->
     <div v-if="evalModalVisible" class="eval-modal-overlay" @click.self="closeEvalModal">
-      <div class="eval-modal">
+      <div class="eval-modal" :class="{ 'eval-modal--skill': evalForm.taskType === 'skill' }">
         <div class="eval-modal-head">
           <h3>{{ evalForm.taskType === 'skill' ? '发起 Skill 评测' : '新建评测任务' }}</h3>
           <button class="eval-modal-close" @click="closeEvalModal">&times;</button>
@@ -4013,6 +4013,15 @@ tbody tr:hover td { background: #f8f9fd; }
 .skill-result-detail { border-top: 0; }
 .eval-modal-btn:disabled, button.eval-filter-clear:disabled { opacity: .55; cursor: not-allowed; }
 .skill-modal-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.eval-modal--skill .eval-modal-head { position: relative; justify-content: center; padding-inline: 56px; }
+.eval-modal--skill .eval-modal-head h3 { text-align: center; }
+.eval-modal--skill .eval-modal-close { position: absolute; right: 24px; top: 50%; transform: translateY(-50%); }
+.eval-modal--skill .skill-modal-fieldset > .skill-overview-note { margin: 0 0 20px; text-align: center; overflow-wrap: anywhere; }
+.eval-modal--skill .skill-modal-fieldset > .eval-modal-field:first-of-type > .eval-modal-label { margin-bottom: 12px; text-align: center; }
+.eval-modal--skill .eval-mode-list--inline { justify-content: center; }
+.eval-modal--skill .eval-mode-list--inline > .eval-mode-item { justify-content: center; }
+.eval-modal--skill .eval-modal-error { text-align: center; }
+.eval-modal--skill .eval-modal-foot { justify-content: center; }
 .eval-modal-overlay { z-index: 4000; }
 
 </style>
