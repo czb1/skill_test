@@ -1,6 +1,6 @@
     # ── Skill 评测 ────────────────────────────────────────────
     def query_skill_eval_result_skills(self, offering_ids, keyword=None,
-                                       page=1, page_size=10):
+                                       page=1, page_size=10, skill_ids=None):
         """范围内开发已完成的 Skill；在统计总数和分页前过滤目录状态。"""
         page = max(int(page), 1)
         page_size = min(max(int(page_size), 1), 100)
@@ -16,6 +16,9 @@
                     TKmSkillInfos.id.in_(session.query(skill_ids_q.c.skill_id)),
                     TKmSkillInfos.status == "已完成",
                 )
+                if skill_ids is not None:
+                    # ID 筛选仍与产品范围、目录状态取交集，不能绕过范围校验。
+                    base_q = base_q.filter(TKmSkillInfos.id.in_(skill_ids))
                 if keyword:
                     like = f"%{keyword}%"
                     base_q = base_q.filter(or_(
@@ -434,3 +437,4 @@
                 session.rollback()
                 logger.error(f"刷新Skill评测批次统计失败: {error}")
                 raise
+
