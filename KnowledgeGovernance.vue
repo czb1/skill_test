@@ -198,7 +198,7 @@
               <colgroup><col style="width:24%" /><col v-for="key in SKILL_MODE_KEYS" :key="key" style="width:21%" /><col style="width:13%" /></colgroup>
               <thead class="asset-table-head"><tr><th>Skill</th><th v-for="key in SKILL_MODE_KEYS" :key="key">{{ skillModeLabel(key) }}</th><th>操作</th></tr></thead>
               <tbody><tr v-for="skill in skillResults" :key="skill.skill_id" class="hierarchy-row hierarchy-row-product clickable-row" :class="{ 'row-active': activeSkill?.skill_id === skill.skill_id }" @click="openSkillDrawer(skill)">
-                <td><button class="skill-name-link" @click.stop="openSkillDrawer(skill)">{{ skill.skill_name || skill.name || '未命名 Skill' }}</button><div class="skill-directory-meta"><span>目录版本 {{ skill.version || '—' }}</span><span>Skill 状态：{{ skill.skill_status || '—' }}</span></div><p v-if="hasSkillMatchError(skill)" class="skill-match-error">{{ skill.match_error || '评测记录关联异常' }}</p></td>
+                <td><button class="skill-name-link" @click.stop="openSkillDrawer(skill)">{{ skill.skill_name || skill.name || '未命名 Skill' }}</button><p v-if="hasSkillMatchError(skill)" class="skill-match-error">{{ skill.match_error || '评测记录关联异常' }}</p></td>
                 <td v-for="key in SKILL_MODE_KEYS" :key="key"><button type="button" class="skill-mode-cell" @click.stop="openSkillDrawer(skill, key)">
                   <span class="skill-mode-status" :class="skillModeResult(skill, key)?.status || 'not_evaluated'">{{ hasSkillMatchError(skill) ? '关联异常' : skillModeStatusLabel(skillModeResult(skill, key)?.status || 'not_evaluated') }}</span>
                   <span v-if="isAwaitingSkillSource(skill.skill_id, key)" class="skill-observation-note">等待新记录</span>
@@ -671,7 +671,7 @@
               <div v-if="activeSkill" class="drawer-body skill-drawer-body" tabindex="0" aria-label="评测结果滚动区域" :aria-busy="skillResultsLoading">
                 <section class="skill-overview">
                   <div class="skill-section-heading"><h4>评测结果</h4><span class="status-pill" :class="activeSkill.status">{{ skillStatusLabel(activeSkill.status) }}</span></div>
-                  <div class="skill-directory-meta"><span>目录版本 {{ activeSkill.version || '—' }}</span><span>目录状态 {{ activeSkill.skill_status || '—' }}</span><span>最近更新 {{ skillLatestUpdated(activeSkill) }}</span><button type="button" class="skill-text-button" :disabled="skillResultsLoading" @click="loadSkillResults()">{{ skillResultsLoading ? '刷新中…' : '刷新结果' }}</button><button type="button" class="skill-text-button" :disabled="activeSkill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(activeSkill)" @click="openSkillEvaluationFor(activeSkill)">发起评测</button></div>
+                  <div class="skill-directory-meta"><span>最近更新 {{ skillLatestUpdated(activeSkill) }}</span><button type="button" class="skill-text-button" :disabled="skillResultsLoading" @click="loadSkillResults()">{{ skillResultsLoading ? '刷新中…' : '刷新结果' }}</button><button type="button" class="skill-text-button" :disabled="activeSkill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(activeSkill)" @click="openSkillEvaluationFor(activeSkill)">发起评测</button></div>
                   <p class="skill-overview-note">三种模式分别展示最新结果及其评测版本；执行完成后，评分和用例判定以报告为准。</p>
                   <p v-if="hasSkillMatchError(activeSkill)" class="skill-state skill-state--error">{{ activeSkill.match_error || '评测记录关联异常，请检查 Skill 名称。' }}</p>
                 </section>
