@@ -178,7 +178,6 @@
             <div class="eval-filter-field"><span>Skill 名称 / 描述</span><input v-model="skillFilter.keyword" placeholder="搜索当前范围的 Skill" @keyup.enter="onSkillFilterChange" /></div>
             <button class="eval-filter-clear" @click="onSkillFilterChange">搜索</button>
             <button v-if="skillFilter.keyword" class="eval-filter-clear" @click="clearSkillFilter">清除</button>
-            <span class="skill-list-hint">仅展示评测中或已有报告的 Skill</span>
             <span v-if="skillReportsLoading" class="skill-list-hint" role="status">正在加载当前页报告…</span>
           </div>
           <p v-if="!skillScopeValid()" class="skill-state">请先选择有效的部门、产品或 PDU。</p>
@@ -671,7 +670,6 @@
               <div v-if="activeSkill" class="drawer-body skill-drawer-body" tabindex="0" aria-label="评测结果滚动区域" :aria-busy="skillResultsLoading">
                 <section class="skill-overview">
                   <div class="skill-section-heading"><h4>评测结果</h4><span class="status-pill" :class="activeSkill.status">{{ skillStatusLabel(activeSkill.status) }}</span></div>
-                  <div class="skill-directory-meta"><button type="button" class="skill-text-button" :disabled="activeSkill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(activeSkill)" @click="openSkillEvaluationFor(activeSkill)">发起评测</button></div>
                   <p class="skill-overview-note">三种模式分别展示最新结果及其评测版本；执行完成后，评分和用例判定以报告为准。</p>
                   <p v-if="hasSkillMatchError(activeSkill)" class="skill-state skill-state--error">{{ activeSkill.match_error || '评测记录关联异常，请检查 Skill 名称。' }}</p>
                 </section>
@@ -4025,17 +4023,17 @@ tbody tr:hover td { background: #f8f9fd; }
 }
 /* 按 Skill 展示的列表及结果状态 */
 .skill-results-table { min-width: 1180px; table-layout: fixed; }
-.skill-results-table td { vertical-align: top; white-space: normal; padding: 16px 14px; }
+.skill-results-table td { vertical-align: top; white-space: normal; padding: 8px 14px; }
 .skill-name-link { border: 0; background: none; padding: 0; text-align: left; color: #3f5fc3; font-size: 14px; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
-.skill-mode-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.skill-mode-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: 1.4; text-align: left; cursor: pointer; }
 .skill-directory-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; color: #7a8798; font-size: 12px; margin-top: 10px; }
 .skill-mode-version, .skill-report-state { color: #7a8798; font-size: 12px; }
 .skill-list-hint { color: #7a8798; font-size: 12px; margin-left: auto; }
-.skill-cell-metric { color: #68768c; font-size: 12px; line-height: 1.6; }
+.skill-cell-metric { color: #68768c; font-size: 12px; }
 .skill-cell-metric b, .skill-cell-metric small { display: inline-block; white-space: nowrap; }
 .skill-row-actions { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; font-size: 13px; }
 .skill-match-error, .has-error { color: #c74242; }
-.skill-match-error { font-size: 12px; line-height: 1.6; margin: 8px 0 0; }
+.skill-match-error { font-size: 12px; line-height: 1.6; margin: 4px 0 0; }
 .skill-observation-note { display: block; font-size: 12px; color: #9a6a1a; line-height: 1.6; }
 .skill-submission-notice { padding: 14px 16px; background: #f1f5ff; border: 1px solid #d9e3f9; border-radius: 8px; color: #425985; font-size: 13px; line-height: 1.7; margin-bottom: 14px; }
 .skill-submission-notice p { margin: 6px 0; }
