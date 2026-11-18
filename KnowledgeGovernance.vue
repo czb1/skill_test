@@ -199,10 +199,12 @@
               <tbody><tr v-for="skill in skillResults" :key="skill.skill_id" class="hierarchy-row hierarchy-row-product clickable-row" :class="{ 'row-active': activeSkill?.skill_id === skill.skill_id }" @click="openSkillDrawer(skill)">
                 <td><button class="skill-name-link" @click.stop="openSkillDrawer(skill)">{{ skill.skill_name || skill.name || '未命名 Skill' }}</button><p v-if="hasSkillMatchError(skill)" class="skill-match-error">{{ skill.match_error || '评测记录关联异常' }}</p></td>
                 <td v-for="key in SKILL_MODE_KEYS" :key="key"><button type="button" class="skill-mode-cell" @click.stop="openSkillDrawer(skill, key)">
-                  <span class="skill-mode-status" :class="skillModeResult(skill, key)?.status || 'not_evaluated'">{{ hasSkillMatchError(skill) ? '关联异常' : skillModeStatusLabel(skillModeResult(skill, key)?.status || 'not_evaluated') }}</span>
-                  <span v-if="isAwaitingSkillSource(skill.skill_id, key)" class="skill-observation-note">等待新记录</span>
-                  <span v-if="!hasSkillMatchError(skill) && skillModeResult(skill, key)?.status === 'completed' && skillReportState(skillModeResult(skill, key))" class="skill-report-state" :class="{ 'has-error': skillModeResult(skill, key)?.report_status === 'error' }">{{ skillReportState(skillModeResult(skill, key)) }}</span>
-                  <span class="skill-mode-version">评测版本 {{ skillModeVersion(skill, key) }}</span>
+                  <span class="skill-mode-meta">
+                    <span class="skill-mode-status" :class="skillModeResult(skill, key)?.status || 'not_evaluated'">{{ hasSkillMatchError(skill) ? '关联异常' : skillModeStatusLabel(skillModeResult(skill, key)?.status || 'not_evaluated') }}</span>
+                    <span class="skill-mode-version">评测版本 {{ skillModeVersion(skill, key) }}</span>
+                    <span v-if="isAwaitingSkillSource(skill.skill_id, key)" class="skill-observation-note">等待新记录</span>
+                    <span v-if="!hasSkillMatchError(skill) && skillModeResult(skill, key)?.status === 'completed' && skillReportState(skillModeResult(skill, key))" class="skill-report-state" :class="{ 'has-error': skillModeResult(skill, key)?.report_status === 'error' }">{{ skillReportState(skillModeResult(skill, key)) }}</span>
+                  </span>
                   <span v-for="entry in skillModeGlance(skill, key)" :key="entry.key" class="skill-cell-metric">{{ entry.label }} <b>{{ entry.value }}</b><small v-if="entry.detail">（{{ entry.detail }}）</small></span>
                 </button></td>
                 <td><div class="skill-row-actions"><button type="button" class="skill-text-button" :disabled="skill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(skill)" @click.stop="openSkillEvaluationFor(skill)">发起评测</button></div></td>
@@ -4025,7 +4027,8 @@ tbody tr:hover td { background: #f8f9fd; }
 .skill-results-table { min-width: 1180px; table-layout: fixed; }
 .skill-results-table td { vertical-align: top; white-space: normal; padding: 8px 14px; }
 .skill-name-link { border: 0; background: none; padding: 0; text-align: left; color: #3f5fc3; font-size: 14px; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
-.skill-mode-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: 1.4; text-align: left; cursor: pointer; }
+.skill-mode-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: 1.4; text-align: left; cursor: pointer; }
+.skill-mode-meta { display: flex; flex: 0 0 100%; min-width: 0; flex-wrap: wrap; align-items: center; gap: 3px 8px; overflow-wrap: anywhere; }
 .skill-directory-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; color: #7a8798; font-size: 12px; margin-top: 10px; }
 .skill-mode-version, .skill-report-state { color: #7a8798; font-size: 12px; }
 .skill-list-hint { color: #7a8798; font-size: 12px; margin-left: auto; }
