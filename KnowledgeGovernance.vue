@@ -668,131 +668,203 @@
         <transition name="drawer-slide">
           <div v-if="skillDrawerVisible" class="drawer-mask" @click.self="closeSkillDrawer">
             <aside ref="skillDrawerPanel" class="drawer-panel drawer-panel--skill" role="dialog" aria-modal="true" aria-labelledby="skill-eval-title" tabindex="-1" @keydown.esc.stop="closeSkillDrawer" @keydown.tab="trapSkillDrawerFocus">
-              <header class="skill-drawer-header"><div><span class="skill-eyebrow">评测中心 / Skill 结果</span><h3 id="skill-eval-title">{{ activeSkill?.skill_name || activeSkill?.name || '未命名 Skill' }}</h3></div><button class="drawer-close" @click="closeSkillDrawer" aria-label="关闭 Skill 评测结果">×</button></header>
-              <div v-if="activeSkill" class="drawer-body skill-drawer-body" tabindex="0" aria-label="评测结果滚动区域" :aria-busy="skillResultsLoading">
-                <section class="skill-overview">
-                  <div class="skill-section-heading"><h4>评测结果</h4><span class="status-pill" :class="activeSkill.status">{{ skillStatusLabel(activeSkill.status) }}</span></div>
-                  <p class="skill-overview-note">三种模式分别展示最新结果及其评测版本；执行完成后，评分和用例判定以报告为准。</p>
-                  <p v-if="hasSkillMatchError(activeSkill)" class="skill-state skill-state--error">{{ activeSkill.match_error || '评测记录关联异常，请检查 Skill 名称。' }}</p>
-                </section>
-                <div v-if="skillResultsError" class="skill-state skill-state--error" role="alert">{{ skillResultsError }}</div>
+              <header class="skill-drawer-header">
+                <div class="skill-drawer-heading">
+                  <p>Skill 评测结果</p>
+                  <h3 id="skill-eval-title">{{ activeSkill?.skill_name || activeSkill?.name || '未命名 Skill' }}</h3>
+                </div>
+                <span v-if="activeSkill && !hasSkillMatchError(activeSkill)" class="status-pill" :class="activeSkill.status">{{ skillStatusLabel(activeSkill.status) }}</span>
+                <button type="button" class="drawer-close" aria-label="关闭 Skill 评测结果" @click="closeSkillDrawer">×</button>
+              </header>
+              <template v-if="activeSkill && activeSkillResult">
                 <div class="skill-mode-switcher" role="group" aria-label="选择评测模式">
-                  <button v-for="mode in skillEvalModes" :key="mode.key" type="button" class="skill-mode-card" :class="[skillModeClass(mode.key), { active: activeSkillMode === mode.key }]" :aria-pressed="activeSkillMode === mode.key" aria-controls="skill-mode-results" @click="selectSkillResultMode(mode.key)">
-                    <span class="skill-mode-card-top"><span class="skill-mode-icon">{{ skillModeIcon(mode.key) }}</span><strong>{{ mode.label }}</strong></span>
-                    <span class="skill-mode-description">{{ skillModeDescription(mode.key) }}</span>
-                    <span class="skill-mode-status" :class="skillModeResult(activeSkill, mode.key)?.status || 'not_evaluated'">{{ hasSkillMatchError(activeSkill) ? '关联异常' : skillModeStatusLabel(skillModeResult(activeSkill, mode.key)?.status || 'not_evaluated') }}</span>
-                    <span class="skill-mode-card-foot"><span v-if="skillReportState(skillModeResult(activeSkill, mode.key))">{{ skillReportState(skillModeResult(activeSkill, mode.key)) }}</span><span>版本 {{ skillModeVersion(activeSkill, mode.key) }}</span></span>
-                    <span v-if="isAwaitingSkillSource(activeSkill.skill_id, mode.key)" class="skill-observation-note">等待本次评测的新记录</span>
+                  <button v-for="mode in skillEvalModes" :key="mode.key" type="button" class="skill-mode-tab"
+                          :class="skillModeClass(mode.key)" :aria-pressed="activeSkillMode === mode.key"
+                          aria-controls="skill-mode-results" @click="selectSkillResultMode(mode.key)">
+                    <span>{{ mode.label }}</span>
+                    <span v-if="!hasSkillMatchError(activeSkill)" class="skill-mode-status" :class="skillModeResult(activeSkill, mode.key)?.status || 'not_evaluated'">
+                      {{ skillModeStatusLabel(skillModeResult(activeSkill, mode.key)?.status || 'not_evaluated') }}
+                    </span>
                   </button>
                 </div>
-                <section id="skill-mode-results" class="skill-mode-panel" :class="skillModeClass(activeSkillMode)" :aria-label="`${skillModeLabel(activeSkillMode)}结果`">
-                  <header class="skill-mode-panel-header"><div class="skill-mode-panel-title"><span class="skill-mode-icon">{{ skillModeIcon(activeSkillMode) }}</span><div><h4>{{ skillModeLabel(activeSkillMode) }}</h4><p>{{ skillModeDescription(activeSkillMode) }}</p></div></div><span class="skill-mode-panel-count">评测版本 {{ skillModeVersion(activeSkill, activeSkillMode) }}</span></header>
-                  <article v-for="row in skillModeRows" :key="`${activeSkillMode}:${row.skill.skill_id}`" class="skill-result-card is-open">
-                    <div class="skill-result-detail">
-                      <p v-if="isAwaitingSkillSource(row.skill.skill_id, activeSkillMode)" class="skill-report-notice">本次已提交，正在等待新记录。下方可能仍为上次评测结果。</p>
-                      <template v-if="row.result?.report">
-                        <div v-if="row.reports.some(report => report.version)" class="skill-report-version-picker">
-                          <label v-if="row.reports.length > 1">报告版本 <select :value="row.reportVersion" @change="selectSkillReportVersion(row.skill.skill_id, ($event.target as HTMLSelectElement).value)"><option v-for="report in row.reports" :key="report.version" :value="report.version">{{ report.version || '当前版本' }}</option></select></label>
-                          <span v-else>报告版本 {{ row.reportVersion }}</span>
+                <div ref="skillDrawerBody" class="drawer-body skill-drawer-body" tabindex="0" aria-label="评测结果滚动区域" :aria-busy="skillResultsLoading">
+                  <div v-if="skillResultsError" class="skill-state skill-state--error" role="alert">{{ skillResultsError }}</div>
+                  <section id="skill-mode-results" class="skill-mode-panel" :class="skillModeClass(activeSkillMode)" :aria-label="skillModeLabel(activeSkillMode) + '结果'">
+                    <p v-if="hasSkillMatchError(activeSkill)" class="skill-state skill-state--error" role="alert">{{ activeSkill.match_error || '评测记录关联异常，请检查 Skill 名称。' }}</p>
+                    <template v-else>
+                      <div v-if="activeSkillResult.result?.version || activeSkillResult.result?.created_at || activeSkillResult.reportVersion" class="skill-report-meta">
+                        <div class="skill-task-meta">
+                          <span v-if="activeSkillResult.result?.version">评测版本 <strong>{{ activeSkillResult.result.version }}</strong></span>
+                          <span v-if="activeSkillResult.result?.created_at">开始时间 <strong>{{ activeSkillResult.result.created_at }}</strong></span>
                         </div>
-                        <div v-if="reportSummaryEntries(row.result.report, activeSkillMode).length" class="skill-report-summary">
-                          <div v-for="entry in reportSummaryEntries(row.result.report, activeSkillMode)" :key="entry.key" class="skill-report-metric"><span>{{ entry.label }}</span><strong>{{ entry.value }}</strong><small v-if="entry.detail">（{{ entry.detail }}）</small></div>
-                        </div>
-                        <p v-if="activeSkillMode === 'TRIGGER' && !triggerCaseStats(row.result.report).available" class="skill-report-notice">报告已返回，但尚未识别到当前模式的用例明细或通过数量，暂不显示统计值。请稍后重新搜索查看结果。</p>
-                        <p v-else-if="row.result.status !== 'completed'" class="skill-overview-note">以下统计基于已返回的报告内容；任务当前状态：{{ skillModeStatusLabel(row.result.status) }}。</p>
-                        <p v-if="activeSkillMode === 'TRIGGER' && triggerCaseStats(row.result.report).total" class="skill-overview-note">按 results 中的 passed 统计；未通过表示用例判定未通过，与执行失败分别统计。<template v-if="triggerCaseStats(row.result.report).unknown"> 未判定用例不计入通过率分母。</template></p>
-                        <div v-if="activeSkillMode === 'TRIGGER' && triggerCaseStats(row.result.report).total" class="skill-trigger-breakdown">
-                          <span v-for="group in triggerCaseStats(row.result.report).groups" :key="group.type">{{ group.label }}：通过 {{ group.passed }} / {{ group.total }}</span>
-                        </div>
-                        <div v-if="reportExtraEntries(row.result.report).length" class="skill-report-extras">
-                          <div v-for="entry in reportExtraEntries(row.result.report)" :key="entry.key" class="skill-report-field"><span class="skill-report-field-label">{{ entry.label }}</span><span class="skill-report-field-value">{{ entry.value }}</span></div>
-                        </div>
+                        <label v-if="activeSkillResult.reports.length > 1" class="skill-report-version-picker">
+                          报告版本
+                          <select :value="activeSkillResult.reportVersion" @change="selectSkillReportVersion(activeSkill.skill_id, ($event.target as HTMLSelectElement).value)">
+                            <option v-for="report in activeSkillResult.reports" :key="report.version" :value="report.version">{{ report.version || '当前版本' }}</option>
+                          </select>
+                        </label>
+                        <span v-else-if="activeSkillResult.reportVersion && activeSkillResult.reportVersion !== activeSkillResult.result?.version">
+                          报告版本 <strong>{{ activeSkillResult.reportVersion }}</strong>
+                        </span>
+                      </div>
+                      <p v-if="isAwaitingSkillSource(activeSkill.skill_id, activeSkillMode)" class="skill-report-notice" role="status">本次已提交，正在等待新记录。下方可能仍为上次评测结果。</p>
+                      <div v-if="!activeSkillReport" class="skill-state skill-report-section" :class="{ 'skill-state--error': activeSkillResult.result?.status === 'failed' || activeSkillResult.result?.report_status === 'error' }" role="status">
+                        {{ skillModeNotice(activeSkillResult.result) }}
+                      </div>
+                      <template v-else :key="activeSkillMode + ':' + activeSkillResult.reportVersion">
+                        <section v-if="activeSkillReport.primaryMetrics.length || activeSkillReport.notes.length || activeSkillReport.triggerStats?.groups.length" class="skill-report-section">
+                          <h4 class="skill-report-section-head">结果概览</h4>
+                          <div class="skill-report-overview">
+                            <dl v-if="activeSkillReport.primaryMetrics.length" class="skill-report-summary">
+                              <div v-for="entry in activeSkillReport.primaryMetrics" :key="entry.key" class="skill-report-metric">
+                                <dt>{{ entry.label }}</dt>
+                                <dd><strong>{{ entry.value }}</strong><small v-if="entry.detail">（{{ entry.detail }}）</small></dd>
+                              </div>
+                            </dl>
+                            <dl v-if="activeSkillReport.otherMetrics.length" class="skill-report-secondary">
+                              <div v-for="entry in activeSkillReport.otherMetrics" :key="entry.key">
+                                <dt>{{ entry.label }}</dt>
+                                <dd>{{ entry.value }}<small v-if="entry.detail">（{{ entry.detail }}）</small></dd>
+                              </div>
+                            </dl>
+                            <div v-if="activeSkillReport.triggerStats?.groups.length" class="skill-trigger-breakdown">
+                              <span v-for="group in activeSkillReport.triggerStats.groups" :key="group.type">{{ group.label }} <strong>通过 {{ group.passed }} / {{ group.total }}</strong></span>
+                            </div>
+                            <p v-if="activeSkillReport.triggerStats?.unknown" class="skill-report-note">未判定用例不计入通过率。</p>
+                            <dl v-if="activeSkillReport.notes.length" class="skill-report-fields">
+                              <div v-for="entry in activeSkillReport.notes" :key="entry.key" class="skill-report-field"><dt>{{ entry.label }}</dt><dd>{{ entry.value }}</dd></div>
+                            </dl>
+                          </div>
+                        </section>
+                        <p v-if="activeSkillReport.triggerStats?.available === false" class="skill-report-notice">报告暂未提供可用于统计的用例数据。</p>
 
-                        <div v-if="reportDimensions(row.result.report).length" class="skill-report-block">
-                          <h5>评测维度 <span>{{ reportDimensions(row.result.report).length }}</span></h5>
-                          <details v-for="(dimension, index) in reportDimensions(row.result.report)" :key="index" class="skill-report-disclosure skill-dimension-disclosure">
-                            <summary><strong>{{ dimension.id }} {{ dimension.name }}</strong><span class="skill-dimension-score">得分 {{ dimension.score }}</span><span class="skill-disclosure-hint">展开细节</span></summary>
-                            <div class="skill-disclosure-body">
-                              <div v-for="entry in dimension.extra" :key="entry.key" class="skill-report-field"><span class="skill-report-field-label">{{ entry.label }}</span><span class="skill-report-field-value">{{ entry.value }}</span></div>
-                              <section v-if="reportImprovementActions(dimension.raw).length" class="skill-report-block skill-improvements">
-                                <h5>改进建议</h5><ul><li v-for="(action, actionIndex) in reportImprovementActions(dimension.raw)" :key="actionIndex">{{ action }}</li></ul>
-                              </section>
-                              <section v-for="group in reportGroups(dimension.raw)" :key="group.key" class="skill-report-block">
-                                <h5>{{ group.label }} <span>{{ group.items.length }}</span></h5>
-                                <div v-for="item in group.items" :key="item.index" class="skill-report-item">
-                                  <span class="skill-report-item-index">{{ item.index + 1 }}</span>
-                                  <div><div v-for="entry in item.entries" :key="entry.key" class="skill-report-field"><span class="skill-report-field-label">{{ entry.label }}</span><span class="skill-report-field-value">{{ entry.value }}</span></div></div>
+                        <section v-if="activeSkillReport.triggerCases.length" class="skill-report-section">
+                          <h4 class="skill-report-section-head">触发用例 <span>{{ activeSkillReport.triggerCases.length }} 条</span></h4>
+                          <div class="skill-case-row skill-case-trigger skill-case-columns" aria-hidden="true">
+                            <span>测试任务</span><span>用例类型</span><span>预期触发</span><span>实际触发</span><span>判定</span>
+                          </div>
+                          <component v-for="item in activeSkillReport.triggerCases" :is="item.fields.length ? 'details' : 'div'" :key="item.index" class="skill-report-row">
+                            <component :is="item.fields.length ? 'summary' : 'div'" class="skill-report-row-head skill-case-row skill-case-trigger">
+                              <span class="skill-case-title">{{ item.title }}</span>
+                              <span class="skill-case-cell skill-case-type"><span class="skill-visually-hidden">用例类型 </span>{{ item.type }}</span>
+                              <span class="skill-case-cell skill-case-expected"><span class="skill-case-label">预期 </span>{{ item.expected }}</span>
+                              <span class="skill-case-cell skill-case-actual"><span class="skill-case-label">实际 </span>{{ item.actual }}</span>
+                              <span class="skill-case-verdict" :class="item.verdict"><span class="skill-visually-hidden">判定 </span>{{ item.verdictLabel }}</span>
+                            </component>
+                            <dl v-if="item.fields.length" class="skill-report-row-body skill-report-fields">
+                              <div v-for="field in item.fields" :key="field.key" class="skill-report-field"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div>
+                            </dl>
+                          </component>
+                        </section>
+
+                        <section v-if="activeSkillReport.qualityCases.length" class="skill-report-section">
+                          <h4 class="skill-report-section-head">质量用例 <span>{{ activeSkillReport.qualityCases.length }} 条</span></h4>
+                          <div class="skill-case-row skill-case-columns" aria-hidden="true">
+                            <span>测试任务</span><span>得分</span><span>判定</span><span>检查点通过</span>
+                          </div>
+                          <component v-for="item in activeSkillReport.qualityCases" :is="item.hasDetails ? 'details' : 'div'" :key="item.index" class="skill-report-row">
+                            <component :is="item.hasDetails ? 'summary' : 'div'" class="skill-report-row-head skill-case-row">
+                              <span class="skill-case-title">{{ item.title }}</span>
+                              <span class="skill-case-cell skill-case-score"><span class="skill-case-label">得分 </span><strong>{{ item.score }}</strong></span>
+                              <span class="skill-case-verdict" :class="item.verdict"><span class="skill-visually-hidden">判定 </span>{{ item.verdictLabel }}</span>
+                              <span class="skill-case-cell skill-case-assertions"><span class="skill-case-label">检查点通过 </span>{{ item.assertionSummary }}</span>
+                            </component>
+                            <div v-if="item.hasDetails" class="skill-report-row-body">
+                              <div v-if="item.caseId || item.duration" class="skill-task-meta">
+                                <span v-if="item.caseId">用例 ID {{ item.caseId }}</span><span v-if="item.duration">耗时 {{ item.duration }}</span>
+                              </div>
+                              <dl v-if="item.fields.length" class="skill-report-fields">
+                                <div v-for="field in item.fields" :key="field.key" class="skill-report-field"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></div>
+                              </dl>
+                              <section v-if="item.assertions.length" class="skill-report-subsection">
+                                <h5>检查点判定 <span>{{ item.assertions.length }} 条</span></h5>
+                                <div class="skill-assertion-list">
+                                  <article v-for="(assertion, index) in item.assertions" :key="index" class="skill-assertion">
+                                    <div class="skill-assertion-heading">
+                                      <span class="skill-case-verdict" :class="assertion.verdict">{{ assertion.verdictLabel }}</span>
+                                      <span v-if="assertion.priority !== '—'" class="skill-report-note">{{ assertion.priority }}</span>
+                                      <strong>{{ assertion.checkPoint }}</strong>
+                                    </div>
+                                    <p v-if="assertion.reason">{{ assertion.reason }}</p>
+                                    <div v-if="assertion.confidence !== null || assertion.evidenceTurn !== null" class="skill-task-meta">
+                                      <span v-if="assertion.confidence !== null">置信度 {{ assertion.confidence }}</span>
+                                      <span v-if="assertion.evidenceTurn !== null">证据回合 {{ assertion.evidenceTurn }}</span>
+                                    </div>
+                                  </article>
                                 </div>
                               </section>
-                              <p v-if="!dimension.extra.length && !reportGroups(dimension.raw).length && !reportImprovementActions(dimension.raw).length" class="skill-result-muted">报告仅返回维度得分，暂无更多细节。</p>
+                              <section v-else-if="item.expectItems.length" class="skill-report-subsection">
+                                <h5>预期检查点</h5>
+                                <ul class="skill-report-actions"><li v-for="(point, index) in item.expectItems" :key="index">{{ point }}</li></ul>
+                              </section>
                             </div>
-                          </details>
-                        </div>
-
-                        <section v-if="reportImprovementActions(row.result.report).length" class="skill-report-block skill-improvements">
-                          <h5>改进建议</h5><ul><li v-for="(action, actionIndex) in reportImprovementActions(row.result.report)" :key="actionIndex">{{ action }}</li></ul>
+                          </component>
                         </section>
 
-                        <section v-if="activeSkillMode === 'TRIGGER' && triggerResultRows(row.result.report).length" class="skill-report-block skill-trigger-cases">
-                          <h5>触发用例结果 <span>{{ triggerResultRows(row.result.report).length }} 条</span></h5>
-                          <div class="skill-quality-case-columns skill-trigger-case-columns" aria-hidden="true"><span></span><span>测试任务</span><span>用例类型</span><span>预期触发</span><span>实际触发</span><span>判定</span></div>
-                          <details v-for="item in triggerResultRows(row.result.report)" :key="item.index" class="skill-quality-case skill-trigger-case">
-                            <summary><span class="skill-quality-case-title">{{ item.title }}</span><span class="skill-trigger-case-type">{{ item.type }}</span><span class="skill-trigger-case-expect"><span class="skill-trigger-mobile-label">预期：</span>{{ item.expected }}</span><span class="skill-trigger-case-actual"><span class="skill-trigger-mobile-label">实际：</span>{{ item.actual }}</span><span class="skill-case-verdict" :class="item.verdict">{{ item.verdictLabel }}</span></summary>
-                            <div class="skill-disclosure-body">
-                              <div v-for="field in item.fields" :key="field.key" class="skill-report-field"><span class="skill-report-field-label">{{ field.label }}</span><span class="skill-report-field-value">{{ field.value }}</span></div>
-                              <p v-if="!item.fields.length" class="skill-result-muted">暂无更多用例信息。</p>
-                            </div>
-                          </details>
-                        </section>
-
-                        <section v-if="activeSkillMode === 'QUALITY' && qualityResultRows(row.result.report).length" class="skill-report-block skill-quality-cases">
-                          <h5>质量用例结果 <span>{{ qualityResultRows(row.result.report).length }} 条</span></h5>
-                          <div class="skill-quality-case-columns" aria-hidden="true"><span></span><span>测试任务</span><span>得分</span><span>判定</span><span>检查点通过</span></div>
-                          <details v-for="item in qualityResultRows(row.result.report)" :key="item.index" class="skill-quality-case">
-                            <summary><span class="skill-quality-case-title">{{ item.title }}</span><strong class="skill-quality-case-score">{{ item.score }}</strong><span class="skill-case-verdict" :class="item.verdict">{{ item.verdictLabel }}</span><span class="skill-quality-assertion-count">{{ item.assertionSummary }}</span></summary>
-                            <div class="skill-disclosure-body">
-                              <div class="skill-quality-case-meta"><span v-if="item.caseId">用例 ID {{ item.caseId }}</span><span v-if="item.duration">耗时 {{ item.duration }}</span></div>
-                              <div v-for="field in item.fields" :key="field.key" class="skill-quality-text"><h6>{{ field.label }}</h6><p>{{ field.value }}</p></div>
-                              <section v-if="item.assertions.length" class="skill-report-block">
-                                <h5>检查点判定 <span>{{ item.assertions.length }}</span></h5>
-                                <article v-for="(assertion, assertionIndex) in item.assertions" :key="assertionIndex" class="skill-assertion-card">
-                                  <div class="skill-assertion-heading"><span class="skill-case-verdict" :class="assertion.verdict">{{ assertion.verdictLabel }}</span><span class="skill-assertion-priority">{{ assertion.priority }}</span><strong>{{ assertion.checkPoint }}</strong></div>
-                                  <p v-if="assertion.reason">{{ assertion.reason }}</p>
-                                  <div class="skill-quality-case-meta"><span v-if="assertion.confidence !== null">置信度 {{ assertion.confidence }}</span><span v-if="assertion.evidenceTurn !== null">证据回合 {{ assertion.evidenceTurn }}</span></div>
+                        <section v-if="activeSkillReport.dimensions.length" class="skill-report-section">
+                          <h4 class="skill-report-section-head">评分维度 <span>{{ activeSkillReport.dimensions.length }} 项</span></h4>
+                          <component v-for="(dimension, index) in activeSkillReport.dimensions" :is="dimension.hasDetails ? 'details' : 'div'" :key="index" class="skill-report-row">
+                            <component :is="dimension.hasDetails ? 'summary' : 'div'" class="skill-report-row-head skill-dimension-row">
+                              <strong>{{ dimension.title }}</strong>
+                              <span class="skill-dimension-score">得分 <strong>{{ dimension.score }}</strong></span>
+                            </component>
+                            <div v-if="dimension.hasDetails" class="skill-report-row-body">
+                              <dl v-if="dimension.extra.length" class="skill-report-fields">
+                                <div v-for="entry in dimension.extra" :key="entry.key" class="skill-report-field"><dt>{{ entry.label }}</dt><dd>{{ entry.value }}</dd></div>
+                              </dl>
+                              <section v-for="group in dimension.groups" :key="group.key" class="skill-report-subsection">
+                                <h5>{{ group.label }} <span>{{ group.items.length }} 条</span></h5>
+                                <article v-for="item in group.items" :key="item.index" class="skill-dimension-item">
+                                  <strong>{{ item.title }}</strong>
+                                  <dl v-if="item.fields.length" class="skill-report-fields">
+                                    <div v-for="entry in item.fields" :key="entry.key" class="skill-report-field"><dt>{{ entry.label }}</dt><dd>{{ entry.value }}</dd></div>
+                                  </dl>
                                 </article>
                               </section>
-                              <section v-else-if="item.expectItems.length" class="skill-report-block"><h5>预期检查点</h5><ul><li v-for="(point, pointIndex) in item.expectItems" :key="pointIndex">{{ point }}</li></ul></section>
+                              <section v-if="dimension.actions.length" class="skill-report-subsection">
+                                <h5>改进建议</h5>
+                                <ul class="skill-report-actions"><li v-for="action in dimension.actions" :key="action">{{ action }}</li></ul>
+                              </section>
                             </div>
-                          </details>
+                          </component>
                         </section>
 
-                        <details v-for="group in reportGroups(row.result.report, activeSkillMode)" :key="group.key" class="skill-report-disclosure">
-                          <summary><strong>{{ group.label }}</strong><span class="skill-section-count">{{ group.items.length }} 条</span><span class="skill-disclosure-hint">展开细节</span></summary>
-                          <div class="skill-disclosure-body">
-                            <details v-for="item in group.items" :key="item.index" class="skill-report-item-disclosure">
-                              <summary><span class="skill-report-item-index">{{ item.index + 1 }}</span><span class="skill-report-item-title">{{ item.title }}</span><span class="skill-disclosure-hint">查看完整内容</span></summary>
-                              <div class="skill-item-fields"><div v-for="entry in item.entries" :key="entry.key" class="skill-report-field"><span class="skill-report-field-label">{{ entry.label }}</span><span class="skill-report-field-value">{{ entry.value }}</span></div></div>
-                            </details>
+                        <section v-for="group in activeSkillReport.groups" :key="group.key" class="skill-report-section">
+                          <h4 class="skill-report-section-head">{{ group.label }} <span>{{ group.items.length }} 条</span></h4>
+                          <component v-for="item in group.items" :is="item.fields.length ? 'details' : 'div'" :key="item.index" class="skill-report-row">
+                            <component :is="item.fields.length ? 'summary' : 'div'" class="skill-report-row-head skill-finding-row">
+                              <span>{{ item.title }}</span>
+                            </component>
+                            <dl v-if="item.fields.length" class="skill-report-row-body skill-report-fields">
+                              <div v-for="entry in item.fields" :key="entry.key" class="skill-report-field"><dt>{{ entry.label }}</dt><dd>{{ entry.value }}</dd></div>
+                            </dl>
+                          </component>
+                        </section>
+
+                        <section v-if="activeSkillReport.actions.length" class="skill-report-section">
+                          <h4 class="skill-report-section-head">改进建议</h4>
+                          <ul class="skill-report-actions skill-report-actions--section">
+                            <li v-for="action in activeSkillReport.actions" :key="action">{{ action }}</li>
+                          </ul>
+                        </section>
+
+                        <details v-if="activeSkillReport.supplements.length" class="skill-report-section skill-report-appendix" :open="!activeSkillReport.hasMainContent">
+                          <summary class="skill-report-section-head skill-report-row-head"><h4>补充信息</h4></summary>
+                          <div class="skill-report-row-body">
+                            <section v-for="section in activeSkillReport.supplements" :key="section.key" class="skill-report-subsection">
+                              <h5>{{ section.label }}</h5>
+                              <dl class="skill-report-fields">
+                                <div v-for="entry in section.entries" :key="entry.key" class="skill-report-field"><dt>{{ entry.label }}</dt><dd>{{ entry.value }}</dd></div>
+                              </dl>
+                            </section>
                           </div>
                         </details>
-                        <details v-for="section in reportSupplementSections(row.result.report)" :key="section.key" class="skill-report-disclosure">
-                          <summary><strong>{{ section.label }}</strong><span class="skill-disclosure-hint">展开查看</span></summary>
-                          <div class="skill-disclosure-body"><div v-for="entry in section.entries" :key="entry.key" class="skill-report-field"><span class="skill-report-field-label">{{ entry.label }}</span><span class="skill-report-field-value">{{ entry.value }}</span></div></div>
-                        </details>
-                        <details v-if="reportAdditionalEntries(row.result.report).length" class="skill-report-disclosure">
-                          <summary><strong>补充信息</strong><span class="skill-disclosure-hint">展开查看</span></summary>
-                          <div class="skill-disclosure-body"><div v-for="entry in reportAdditionalEntries(row.result.report)" :key="entry.key" class="skill-report-field"><span class="skill-report-field-label">{{ entry.label }}</span><span class="skill-report-field-value">{{ entry.value }}</span></div></div>
-                        </details>
-                        <p v-if="!hasReportContent(row.result.report)" class="skill-result-muted">评测已完成，报告暂未提供指标或明细。</p>
+                        <p v-else-if="!activeSkillReport.hasMainContent" class="skill-state skill-report-section">报告暂未提供指标或明细。</p>
                       </template>
-                      <div v-else class="skill-state" :class="{ 'skill-state--error': row.result?.status === 'failed' || row.result?.report_status === 'error' }" role="status">
-                        <p>{{ skillModeNotice(row.result) }}</p>
-                      </div>
-                      <div class="skill-directory-meta"><span>评测版本 {{ row.result?.version || '—' }}</span><span>开始时间 {{ row.result?.created_at || '—' }}</span></div>
-                    </div>
-                  </article>
-                </section>
-              </div>
+                    </template>
+                  </section>
+                </div>
+              </template>
             </aside>
           </div>
         </transition>
@@ -1192,10 +1264,6 @@ function skillModeStatusLabel(status: string): string {
 function skillModeClass(mode: string): string {
   return ({ STATIC: 'mode-static', TRIGGER: 'mode-trigger', QUALITY: 'mode-quality' } as Record<string, string>)[mode] || 'mode-other';
 }
-function skillModeIcon(mode: string): string { return ({ STATIC: '静', TRIGGER: '触', QUALITY: '质' } as Record<string, string>)[mode] || '评'; }
-function skillModeDescription(mode: string): string {
-  return ({ STATIC: '检查结构、规范与静态规则', TRIGGER: '验证正向触发与负向误触发', QUALITY: '查看质量得分与用例表现' } as Record<string, string>)[mode] || '';
-}
 function skillStatusLabel(status: string): string {
   return ({ processing: '评测中', failed: '存在失败或取消', not_evaluated: '未评测', done: '三种模式执行完成', partial: '部分模式已完成' } as Record<string, string>)[status] || status || '未评测';
 }
@@ -1359,6 +1427,7 @@ async function collectScopedSkillResults(scope: ReturnType<typeof skillScopePara
   return [...byId.values()];
 }
 const skillDrawerVisible = ref(false), skillDrawerPanel = ref<HTMLElement | null>(null);
+const skillDrawerBody = ref<HTMLElement | null>(null);
 const activeSkill = ref<SkillEvalSkillResult | null>(null), activeSkillMode = ref('STATIC');
 const selectedSkillReportVersions = ref<Record<string, string>>({});
 let skillDrawerTrigger: HTMLElement | null = null;
@@ -1522,7 +1591,10 @@ function goToSkillPage(page: number | string) {
 function onSkillPageSizeChange() { skillPage.value = 1; skillJumpPage.value = 1; closeSkillDrawer(); applySkillResultPage(); void hydrateVisibleSkillReports(); }
 function skillResultKey(skillId: string): string { return JSON.stringify([activeSkillMode.value, skillId]); }
 function selectSkillReportVersion(id: string, version: string) { selectedSkillReportVersions.value[skillResultKey(id)] = version; }
-function selectSkillResultMode(mode: string) { activeSkillMode.value = normalizeSkillMode(mode); }
+function selectSkillResultMode(mode: string) {
+  activeSkillMode.value = normalizeSkillMode(mode);
+  if (skillDrawerBody.value) skillDrawerBody.value.scrollTop = 0;
+}
 function openSkillDrawer(skill: SkillEvalSkillResult, mode = 'STATIC') {
   skillDrawerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   activeSkill.value = skill; activeSkillMode.value = mode; skillDrawerVisible.value = true; selectedSkillReportVersions.value = {};
@@ -1541,12 +1613,18 @@ function trapSkillDrawerFocus(event: KeyboardEvent) {
   if (event.shiftKey && (document.activeElement === first || document.activeElement === panel)) { event.preventDefault(); last.focus(); }
   else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panel)) { event.preventDefault(); first.focus(); }
 }
-const skillModeRows = computed(() => activeSkill.value ? [activeSkill.value].map(skill => {
-  const source = skillModeResult(skill, activeSkillMode.value), reports = parsedSkillReports(skill, activeSkillMode.value);
-  const selected = selectedSkillReportVersions.value[skillResultKey(skill.skill_id)], preferred = source?.version?.replace(/^v/i, '');
-  const current = reports.find(report => report.version === selected) || reports.find(report => report.version.replace(/^v/i, '') === preferred) || reports[0];
-  return { skill, reports, reportVersion: current?.version || '', result: source ? { ...source, report: current?.report || null } : null };
-}) : []);
+const activeSkillResult = computed(() => {
+  const skill = activeSkill.value;
+  if (!skill) return null;
+  const source = skillModeResult(skill, activeSkillMode.value);
+  const reports = parsedSkillReports(skill, activeSkillMode.value);
+  const selected = selectedSkillReportVersions.value[skillResultKey(skill.skill_id)];
+  const preferred = source?.version?.replace(/^v/i, '');
+  const current = reports.find(report => report.version === selected)
+      || reports.find(report => report.version.replace(/^v/i, '') === preferred)
+      || reports[0];
+  return { reports, reportVersion: current?.version || '', result: source ? { ...source, report: current?.report || null } : null };
+});
 
 async function submitSkillEvaluation() {
   if (skillSubmitting.value || selectingAllSkills.value || !skillScopeValid()) return;
@@ -1862,19 +1940,20 @@ function qualityResultRows(report: Record<string, any> | null) {
     const score = finiteScore(item.score ?? item.overall_score ?? item.total_score ?? item.result?.score);
     const verdict = item.passed === true ? 'pass' : item.passed === false ? 'fail' : 'unknown';
     const duration = finiteScore(item.cost_time);
+    const expectItems = (Array.isArray(item.expect_items) ? item.expect_items : []).map((point: any) => formatCellValue(isReportObject(point) ? point.check_point : point));
     return { index, title: formatCellValue(item.task || item.case_name || item.title || item.name || item.case_id || '未命名测试任务'),
       score: score === null ? '—' : formatScore(score), verdict, verdictLabel: verdict === 'pass' ? '通过' : verdict === 'fail' ? '未通过' : '未判定',
       assertionSummary: assertions.length ? `${assertions.filter((assertion: { verdict: string }) => assertion.verdict === 'pass').length} / ${assertions.length}` : '—',
-      assertions, fields, caseId: item.case_id ? String(item.case_id) : '', duration: duration === null ? '' : `${formatScore(duration)} 秒`,
-      expectItems: (Array.isArray(item.expect_items) ? item.expect_items : []).map((point: any) => formatCellValue(isReportObject(point) ? point.check_point : point)) };
+      assertions, fields, expectItems, caseId: item.case_id ? String(item.case_id) : '', duration: duration === null ? '' : `${formatScore(duration)} 秒`,
+      hasDetails: Boolean(item.case_id || duration !== null || fields.length || assertions.length || expectItems.length) };
   });
 }
 const REPORT_GROUPS = [
-  { key: 'findings', label: '问题发现' },
-  { key: 'improvements', label: '改进建议' },
-  { key: 'results', label: '用例 / 结果明细' },
-  { key: 'check_issues', label: '预检问题' },
   { key: 'critical_issues', label: '关键问题' },
+  { key: 'findings', label: '问题发现' },
+  { key: 'check_issues', label: '预检问题' },
+  { key: 'results', label: '用例 / 结果明细' },
+  { key: 'improvements', label: '改进建议' },
 ];
 const REPORT_SUPPLEMENT_GROUPS = [
   { key: 'knowledge_ratio', label: '知识构成' },
@@ -1934,17 +2013,18 @@ function reportCollectionItems(report: Record<string, any> | null, key: string) 
   return items.map((item, index) => ({ item, index }))
       .filter(({ item }) => key !== 'critical_issues' || typeof item !== 'string' || !findingTexts.has(item.trim()))
       .map(({ item, index }) => {
-        const object = item && typeof item === 'object' && !Array.isArray(item);
+        const object = isReportObject(item);
         const entries = object ? reportObjectEntries(item) : [{ key: 'value', label: '内容', value: formatCellValue(item) }];
-        const title = object
-            ? item.title || item.case_name || item.task || item.name || item.issue || item.description || item.suggestion || item.message
-            : item;
-        return { index, entries, title: formatCellValue(title ?? `第 ${index + 1} 条`) };
+        const titleKey = object ? ['title', 'case_name', 'task', 'name', 'issue', 'description', 'suggestion', 'message', 'content'].find(key => hasReportValue(item[key])) : 'value';
+        const title = object ? (titleKey ? item[titleKey] : undefined) : item;
+        return { index, entries, titleKey, title: formatCellValue(title ?? `第 ${index + 1} 条`) };
       });
 }
 function reportGroups(report: Record<string, any> | null, mode = '') {
   return REPORT_GROUPS.filter(group => group.key !== 'improvements' && !(['QUALITY', 'TRIGGER'].includes(mode) && group.key === 'results'))
-      .map(group => ({ ...group, items: reportCollectionItems(report, group.key) })).filter(group => group.items.length);
+      .map(group => ({ ...group, items: reportCollectionItems(report, group.key).map(({ index, title, titleKey, entries }) => ({
+        index, title, fields: entries.filter(entry => entry.key !== titleKey),
+      })) })).filter(group => group.items.length);
 }
 function reportImprovementActions(report: Record<string, any> | null): string[] {
   const actions = [report?.improvements, report?.top3_improvements].flatMap(raw => {
@@ -1994,9 +2074,44 @@ function reportDimensions(report: Record<string, any> | null): SkillReportDimens
     };
   });
 }
-function hasReportContent(report: Record<string, any> | null): boolean {
-  return !!(reportSummaryEntries(report).length || reportExtraEntries(report).length || reportAdditionalEntries(report).length || reportSupplementSections(report).length || reportDimensions(report).length || reportGroups(report).length || reportImprovementActions(report).length || Array.isArray(report?.results));
-}
+const REPORT_PRIMARY_METRICS: Record<string, string[][]> = {
+  STATIC: [['total', 'total_score', 'overall_score', 'score'], ['grade'], ['percent']],
+  TRIGGER: [['passed_cases'], ['pass_rate', 'accuracy'], ['positive_trigger_rate'], ['negative_false_trigger_rate']],
+  QUALITY: [['score', 'overall_score', 'total_score', 'total', 'average_score', 'avg_score', 'average_case_score'], ['passed_cases'], ['pass_rate'], ['assertions_passed']],
+};
+const REPORT_OVERVIEW_KEYS = new Set(['summary', 'conclusion', 'gate_blocked', 'd10_low_confidence_note', 'content']);
+const activeSkillReport = computed(() => {
+  const report = activeSkillResult.value?.result?.report;
+  if (!report) return null;
+  const mode = activeSkillMode.value;
+  const metrics = reportSummaryEntries(report, mode);
+  const primary = (REPORT_PRIMARY_METRICS[mode] || []).flatMap(keys => {
+    const metric = keys.map(key => metrics.find(entry => entry.key === key)).find(entry => entry !== undefined);
+    return metric ? [metric] : [];
+  });
+  const primaryMetrics = primary.length ? primary : metrics.slice(0, 4);
+  const otherMetrics = metrics.filter(entry => !primaryMetrics.includes(entry));
+  const extra = reportExtraEntries(report);
+  const notes = extra.filter(entry => REPORT_OVERVIEW_KEYS.has(entry.key));
+  const triggerStats = mode === 'TRIGGER' ? triggerCaseStats(report) : null;
+  const triggerCases = mode === 'TRIGGER' ? triggerResultRows(report) : [];
+  const qualityCases = mode === 'QUALITY' ? qualityResultRows(report) : [];
+  const dimensions = reportDimensions(report).map(dimension => {
+    const groups = reportGroups(dimension.raw);
+    const actions = reportImprovementActions(dimension.raw);
+    const title = dimension.id && dimension.id !== dimension.name ? `${dimension.id} ${dimension.name}` : dimension.name;
+    return { ...dimension, title, groups, actions, hasDetails: Boolean(dimension.extra.length || groups.length || actions.length) };
+  });
+  const groups = reportGroups(report, triggerCases.length || qualityCases.length ? mode : '');
+  const actions = reportImprovementActions(report);
+  const supplements = [
+    { key: 'metadata', label: '报告信息', entries: extra.filter(entry => !REPORT_OVERVIEW_KEYS.has(entry.key)) },
+    ...reportSupplementSections(report),
+    { key: 'additional', label: '其他字段', entries: reportAdditionalEntries(report) },
+  ].filter(section => section.entries.length);
+  const hasMainContent = Boolean(metrics.length || notes.length || triggerCases.length || qualityCases.length || dimensions.length || groups.length || actions.length);
+  return { primaryMetrics, otherMetrics, notes, triggerStats, triggerCases, qualityCases, dimensions, groups, actions, supplements, hasMainContent };
+});
 
 function switchEvalTab(tab: EvalTab) {
   evalTab.value = tab;
@@ -3819,204 +3934,196 @@ tbody tr:hover td { background: #f8f9fd; }
 }
 .skill-picker-pager button:disabled { color: #c0c4cc; cursor: not-allowed; background: #f4f4f5; }
 
-/* ---- Skill 评测结果：概览、模式与明细层级 ---- */
-.drawer-panel--skill { width: 1120px; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; background: #f5f7fb; color: #24324a; }
-.skill-drawer-header { flex: 0 0 auto; display: flex; align-items: center; gap: 16px; padding: 18px 28px; background: #fff; border-bottom: 1px solid #e2e7ef; }
-.skill-drawer-header h3 { margin: 5px 0 0; font-size: 20px; font-weight: 700; letter-spacing: -.3px; }
-.skill-eyebrow { font-size: 11px; font-weight: 600; color: #7a879b; letter-spacing: .5px; }
-.skill-drawer-body { flex: 1 1 0; min-height: 0; min-width: 0; overflow-y: scroll; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior: contain; scrollbar-width: auto; scrollbar-color: #a7b5ca #edf1f7; gap: 24px; padding: 24px 28px 40px; }
-/* 正文中的面板保持自然高度，禁止 flex 压缩后被 overflow:hidden 裁掉。 */
+/* ---- Skill 评测详情 ---- */
+.drawer-panel--skill { width: 1040px; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; background: #f5f7fb; color: #24324a; }
+.skill-drawer-header {
+  display: flex; flex: 0 0 auto; align-items: center; gap: 14px;
+  padding: 16px 26px; background: #fff;
+}
+.skill-drawer-heading { flex: 1; min-width: 0; }
+.skill-drawer-heading p { margin: 0 0 4px; color: #65748a; font-size: 12px; }
+.skill-drawer-heading h3 { margin: 0; font-size: 21px; line-height: 1.35; overflow-wrap: anywhere; }
+.skill-drawer-header > .status-pill { flex: 0 0 auto; }
+.skill-drawer-header > .status-pill:not(.done, .processing, .failed) { color: #53637a; background: #eef2f7; }
+.skill-drawer-header > .drawer-close { flex: 0 0 32px; margin-left: 0; }
+.skill-drawer-body {
+  flex: 1 1 0; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden;
+  scrollbar-gutter: stable; overscroll-behavior: contain; gap: 14px; padding: 18px 26px 32px;
+}
 .skill-drawer-body > * { flex: 0 0 auto; }
-.skill-drawer-body::-webkit-scrollbar { display: block; width: 11px; height: 11px; }
-.skill-drawer-body::-webkit-scrollbar-track { background: #edf1f7; }
-.skill-drawer-body::-webkit-scrollbar-thumb { background: #a7b5ca; border: 3px solid #edf1f7; border-radius: 8px; }
-.skill-drawer-body::-webkit-scrollbar-thumb:hover { background: #8194af; }
-.skill-overview { background: #fff; border: 1px solid #e1e7f0; border-radius: 12px; padding: 22px 24px 16px; }
-.skill-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.skill-section-heading h4 { margin: 6px 0 0; font-size: 19px; line-height: 1.5; overflow-wrap: anywhere; }
-.skill-section-heading--small { margin-bottom: 12px; }
-.skill-section-heading--small h4 { margin: 0; font-size: 15px; }
-.skill-section-heading--small > span { color: #7c899c; font-size: 12px; }
+.skill-drawer-body:focus-visible { outline: 2px solid #3d6bcb; outline-offset: -2px; }
 .skill-text-button { padding: 0; border: 0; background: none; color: #3668c9; font: inherit; cursor: pointer; }
 .skill-text-button:disabled { opacity: .5; cursor: wait; }
-.skill-overview-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin: 23px 0 19px; }
-.skill-overview-stats > div { display: flex; flex-direction: column; gap: 8px; border-left: 1px solid #e7ebf3; padding-left: 22px; }
-.skill-overview-stats > div:first-child { border-left: 0; padding-left: 0; }
-.skill-overview-stats span { color: #748198; font-size: 12px; }
-.skill-overview-stats strong { font-size: 29px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
-.skill-overview-stats small { font-size: 16px; font-weight: 400; color: #8c98aa; }
-.has-error, .skill-overview-stats .has-error strong { color: #bf454c; }
-.skill-progress-track { height: 5px; display: flex; overflow: hidden; border-radius: 5px; background: #edf0f5; }
-.skill-progress-track .is-completed { background: #6789dc; }
-.skill-progress-track .is-failed { background: #d96b70; }
-.skill-overview-note { margin: 10px 0 0; color: #8390a2; font-size: 11px; line-height: 1.65; }
+
 .mode-static { --mode-color: #2f65c8; --mode-tint: #edf3ff; --mode-line: #bed0f4; }
 .mode-trigger { --mode-color: #7652b7; --mode-tint: #f4effc; --mode-line: #d8c7ed; }
 .mode-quality { --mode-color: #167c74; --mode-tint: #edf8f6; --mode-line: #b7dfd7; }
 .mode-other { --mode-color: #52647e; --mode-tint: #f0f3f7; --mode-line: #ccd5e1; }
-.skill-mode-switcher { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.skill-mode-card { min-width: 0; display: flex; flex-direction: column; gap: 11px; padding: 16px; text-align: left; color: #506079; background: #fff; border: 1px solid #dfe5ee; border-top: 3px solid var(--mode-line); border-radius: 10px; cursor: pointer; font: inherit; transition: border-color .16s, background .16s, box-shadow .16s; }
-.skill-mode-card:hover { border-color: var(--mode-color); }
-.skill-mode-card.active { background: var(--mode-tint); border-color: var(--mode-color); box-shadow: 0 0 0 1px var(--mode-color); }
-.skill-mode-card-top { display: flex; align-items: center; gap: 9px; }
-.skill-mode-icon { width: 30px; height: 30px; display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; color: var(--mode-color); background: var(--mode-tint); border: 1px solid var(--mode-line); border-radius: 8px; font-size: 13px; font-weight: 700; }
-.skill-mode-card-top > strong { font-size: 14px; color: var(--mode-color); }
-.skill-mode-selected { margin-left: auto; color: #8390a1; font-size: 10px; white-space: nowrap; }
-.skill-mode-card.active .skill-mode-selected { color: var(--mode-color); font-weight: 600; }
-.skill-mode-description { font-size: 11px; line-height: 1.5; color: #79869a; }
-.skill-mode-card-count { font-size: 12px; margin-top: 3px; }
-.skill-mode-card-count b { font-size: 24px; font-weight: 650; color: #28374f; }
-.skill-mode-card-foot { display: flex; justify-content: space-between; gap: 8px; padding-top: 9px; border-top: 1px solid var(--mode-line); color: #7c899c; font-size: 11px; }
-.skill-mode-panel { min-width: 0; background: #fff; border: 1px solid var(--mode-line); border-top: 3px solid var(--mode-color); border-radius: 12px; overflow: hidden; }
-.skill-mode-panel-header { display: flex; justify-content: space-between; align-items: center; gap: 15px; background: var(--mode-tint); border-bottom: 1px solid var(--mode-line); padding: 18px 20px; }
-.skill-mode-panel-title { display: flex; align-items: center; gap: 12px; min-width: 0; }
-.skill-mode-panel-title h4 { font-size: 17px; color: var(--mode-color); margin: 0 0 4px; }
-.skill-mode-panel-title p { margin: 0; font-size: 12px; line-height: 1.5; color: #7b879a; }
-.skill-mode-panel-count { font-size: 12px; color: var(--mode-color); white-space: nowrap; }
-.skill-mode-outcome-overview { padding: 18px 20px; border-bottom: 1px solid #e7ecf4; background: #fcfdff; }
-.skill-mode-outcome-overview h5 { margin: 0 0 12px; font-size: 13px; color: var(--mode-color); }
-.skill-report-version-picker { color: #748299; font-size: 12px; }
-.skill-report-version-picker label { display: flex; align-items: center; gap: 10px; }
-.skill-report-version-picker select { padding: 5px 10px; border: 1px solid #dfe5ee; border-radius: 5px; color: #506079; background: #fff; }
-.skill-trigger-breakdown { display: flex; flex-wrap: wrap; gap: 8px 24px; color: #718199; font-size: 12px; }
-.skill-results-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin: 0 20px; padding: 15px 0; color: #7c899b; font-size: 12px; }
-.skill-results-toolbar label { display: flex; align-items: center; gap: 9px; }
-.skill-results-toolbar select { padding: 5px 25px 5px 9px; border: 1px solid #dfe5ee; border-radius: 5px; background: #fff; color: #506079; font: inherit; }
-.skill-result-card { margin: 0 20px 12px; border: 1px solid #e1e6ef; border-radius: 8px; overflow: hidden; background: #fff; }
-.skill-result-card:last-child { margin-bottom: 20px; }
-.skill-result-card.is-open { border-color: var(--mode-line); }
-.skill-result-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; width: 100%; padding: 16px; border: 0; text-align: left; color: #3e4d65; background: #fff; cursor: pointer; font: inherit; }
-.skill-result-toggle:hover { background: #fafbfe; }
-.skill-result-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex: 1 1 100%; min-width: 0; }
-.skill-result-identity > strong { font-size: 14px; overflow-wrap: anywhere; }
-.skill-result-version { font-size: 11px; color: #8b97a8; }
+.skill-mode-switcher {
+  display: grid; flex: 0 0 auto; grid-template-columns: repeat(3, minmax(0, 156px)); gap: 8px;
+  padding: 0 26px; border-bottom: 1px solid #dfe6ef; background: #fff;
+}
+.skill-mode-tab {
+  display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; min-height: 45px;
+  padding: 8px 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #516078;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; overflow-wrap: anywhere;
+}
+.skill-mode-tab:hover, .skill-mode-tab[aria-pressed="true"] { background: var(--mode-tint); color: var(--mode-color); }
+.skill-mode-tab[aria-pressed="true"] { border-bottom-color: var(--mode-color); }
 .skill-mode-status { display: inline-flex; align-items: center; padding: 3px 7px; font-size: 10px; line-height: 1.4; color: #7a879a; background: #f0f3f7; border-radius: 4px; }
 .skill-mode-status.completed { color: #2e7a57; background: #edf7f1; }
 .skill-mode-status.failed { color: #b4424a; background: #fceef0; }
 .skill-mode-status.running, .skill-mode-status.queuing { color: #9a701c; background: #fcf5e6; }
-.skill-result-glance { display: flex; flex-wrap: wrap; gap: 8px 20px; color: #7a879a; font-size: 12px; }
-.skill-result-glance b { margin-left: 4px; color: #354762; font-weight: 650; white-space: nowrap; }
-.skill-result-metric-count { display: block; margin-top: 3px; color: #8390a4; font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.skill-result-glance .skill-findings-count { color: #b17823; }
-.skill-result-action { margin-left: auto; font-size: 12px; font-weight: 500; white-space: nowrap; color: var(--mode-color); }
-.skill-result-action > span { margin-left: 6px; }
-.skill-result-muted { font-size: 12px; color: #8793a5; line-height: 1.65; overflow-wrap: anywhere; }
-.skill-result-detail { padding: 18px 16px; border-top: 1px solid #e7ecf3; background: #fcfdff; display: flex; flex-direction: column; gap: 16px; }
-.skill-detail-breadcrumb { font-size: 11px; color: var(--mode-color); overflow-wrap: anywhere; }
-.skill-detail-breadcrumb span { margin: 0 7px; color: #b2bccb; }
-.skill-report-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
-.skill-report-metric { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid #e7ebf2; border-radius: 7px; background: #fff; min-width: 0; }
-.skill-report-metric > span { font-size: 11px; color: #7e8b9f; }
-.skill-report-metric > strong { font-size: 21px; line-height: 1.3; color: #2c3f5c; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.skill-report-metric > small { margin-top: -3px; font-size: 12px; line-height: 1.4; color: #8390a4; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.skill-report-extras { display: flex; flex-direction: column; gap: 8px; padding: 14px; background: #f3f6fb; border-radius: 7px; }
-.skill-report-block { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.skill-report-block h5 { margin: 0 0 3px; font-size: 12px; color: #586b85; }
-.skill-report-block h5 > span { margin-left: 5px; color: #9aa6b7; font-weight: 400; }
-.skill-report-disclosure, .skill-report-item-disclosure { min-width: 0; border: 1px solid #e3e8f1; border-radius: 7px; background: #fff; }
-.skill-report-disclosure > summary, .skill-report-item-disclosure > summary { display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 13px 14px; list-style: none; font-size: 12px; color: #4d607d; }
-.skill-report-disclosure > summary::-webkit-details-marker, .skill-report-item-disclosure > summary::-webkit-details-marker { display: none; }
-.skill-report-disclosure > summary::before, .skill-report-item-disclosure > summary::before { content: '›'; display: inline-block; color: #8696ae; font-size: 17px; transition: transform .15s; }
-.skill-report-disclosure[open] > summary::before, .skill-report-item-disclosure[open] > summary::before { transform: rotate(90deg); }
-.skill-report-disclosure[open] > summary { background: #f5f8fc; border-bottom: 1px solid #e7ecf4; }
-.skill-report-disclosure > summary > strong { overflow-wrap: anywhere; }
-.skill-dimension-score { font-size: 12px; font-weight: 600; color: var(--mode-color); margin-left: auto; white-space: nowrap; }
-.skill-dimension-disclosure > summary { display: grid; grid-template-columns: 12px minmax(0, 1fr) 108px 72px; align-items: center; }
-.skill-dimension-disclosure > summary > .skill-dimension-score { margin-left: 0; text-align: right; justify-self: stretch; font-variant-numeric: tabular-nums; }
-.skill-dimension-disclosure > summary > .skill-disclosure-hint { margin-left: 0; text-align: right; }
-.skill-disclosure-hint { margin-left: auto; flex-shrink: 0; font-size: 10px; color: #8c99ad; }
-.skill-report-disclosure[open] > summary > .skill-disclosure-hint { visibility: hidden; }
-.skill-section-count { padding: 2px 6px; border-radius: 4px; background: #f1f4f9; color: #7d8ba0; font-size: 10px; white-space: nowrap; }
-.skill-disclosure-body { display: flex; flex-direction: column; gap: 12px; padding: 14px; min-width: 0; }
-.skill-report-item { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; padding: 12px; border: 1px solid #e9edf4; border-radius: 6px; }
-.skill-report-item > div { display: flex; flex-direction: column; gap: 7px; }
-.skill-report-item-index { display: inline-flex; justify-content: center; align-items: center; align-self: flex-start; width: 21px; height: 21px; background: #f0f3f8; color: #8695ac; border-radius: 4px; font-size: 10px; flex-shrink: 0; }
-.skill-report-item-title { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.6; }
-.skill-item-fields { padding: 4px 14px 14px 44px; display: flex; flex-direction: column; gap: 10px; }
-.skill-report-field { display: grid; grid-template-columns: 95px minmax(0, 1fr); gap: 12px; font-size: 12px; line-height: 1.75; }
-.skill-report-field-label { color: #8390a4; overflow-wrap: anywhere; }
-.skill-report-field-value { color: #4c5e79; overflow-wrap: anywhere; white-space: pre-wrap; min-width: 0; }
-.skill-state { margin: 0; padding: 22px 16px; text-align: center; color: #8895a9; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
-.skill-state--error { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 14px; text-align: left; color: #b64b54; background: #fff4f4; border: 1px solid #f1d6d9; border-radius: 7px; white-space: pre-wrap; }
+.skill-mode-panel { display: grid; gap: 14px; min-width: 0; }
+
+.skill-report-meta, .skill-task-meta {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px;
+  color: #627187; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere;
+}
+.skill-report-meta { justify-content: space-between; }
+.skill-report-meta strong { color: #3c4d65; font-weight: 600; }
+.skill-report-version-picker { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.skill-report-version-picker select {
+  max-width: 100%; padding: 4px 8px; border: 1px solid #dce3ed; border-radius: 5px;
+  color: #3c4d65; background: #fff; font: inherit;
+}
+.skill-report-section { min-width: 0; overflow: hidden; border: 1px solid #dfe6ef; border-radius: 8px; background: #fff; }
+.skill-report-section-head {
+  display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 13px 16px;
+  color: #283951; font-size: 14px; font-weight: 650; line-height: 1.5;
+}
+.skill-report-section-head h4 { margin: 0; font: inherit; }
+.skill-report-section-head > span, .skill-report-subsection h5 > span { color: #68778c; font-size: 12px; font-weight: 400; }
+.skill-report-overview { display: grid; gap: 12px; padding: 0 16px 14px; }
+.skill-report-summary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));
+  gap: 8px; margin: 0;
+}
+.skill-report-metric { min-width: 0; padding: 10px 12px; background: var(--mode-tint); border-radius: 6px; }
+.skill-report-metric dt { color: #485a72; font-size: 12px; overflow-wrap: anywhere; }
+.skill-report-metric dd {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 4px; margin: 4px 0 0;
+  color: var(--mode-color); line-height: 1.25; font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+}
+.skill-report-metric dd strong { min-width: 0; font-size: 24px; font-weight: 650; }
+.skill-report-metric small, .skill-report-secondary small { color: #52637c; font-size: 12px; white-space: nowrap; }
+.skill-report-secondary {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(148px, 100%), 1fr));
+  gap: 7px 16px; margin: 0; color: #607087; font-size: 12px;
+}
+.skill-report-secondary > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+.skill-report-secondary dd { margin: 0; color: #34465f; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.skill-trigger-breakdown { display: flex; flex-wrap: wrap; gap: 6px 18px; color: #607087; font-size: 12px; }
+.skill-trigger-breakdown strong { color: #34465f; font-weight: 600; }
+.skill-report-note { margin: 0; color: #637187; font-size: 12px; line-height: 1.5; }
+
+.skill-report-row { min-width: 0; border-top: 1px solid #edf0f5; }
+.skill-report-row-head, .skill-case-row {
+  display: grid; align-items: center; gap: 10px; padding: 9px 16px;
+  box-sizing: border-box; min-width: 0; line-height: 1.55; overflow-wrap: anywhere;
+}
+.skill-report-row-head { min-height: 43px; color: #34445b; font-size: 13px; }
+details > summary.skill-report-row-head { cursor: pointer; list-style: none; }
+details > summary.skill-report-row-head::-webkit-details-marker { display: none; }
+details > summary.skill-report-row-head::after {
+  content: ''; width: 6px; height: 6px; justify-self: center;
+  border-right: 1.5px solid #66768c; border-bottom: 1.5px solid #66768c;
+  transform: rotate(-45deg);
+}
+details[open] > summary.skill-report-row-head::after { transform: rotate(45deg); }
+details > summary.skill-report-row-head:hover, details[open] > summary.skill-report-row-head { background: #f1f5f9; }
+.skill-report-row-body {
+  display: grid; gap: 14px; padding: 12px 16px 14px; min-width: 0;
+  border-top: 1px solid #e8edf4; background: #f8fafc;
+}
+.skill-dimension-row { grid-template-columns: minmax(0, 1fr) auto 12px; }
+.skill-dimension-score { color: #607087; font-size: 12px; }
+.skill-dimension-score strong { color: var(--mode-color); font-size: 14px; font-variant-numeric: tabular-nums; }
+.skill-dimension-item { display: grid; gap: 5px; color: #34445b; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.skill-dimension-item + .skill-dimension-item { padding-top: 8px; border-top: 1px solid #e8edf4; }
+.skill-finding-row, .skill-report-appendix > summary { grid-template-columns: minmax(0, 1fr) 12px; }
+.skill-finding-row > span { white-space: pre-wrap; }
+.skill-report-appendix > summary { font-size: 14px; }
+
+.skill-report-fields { display: grid; gap: 6px; margin: 0; }
+.skill-report-field {
+  display: grid; grid-template-columns: minmax(96px, 16%) minmax(0, 1fr); gap: 4px 14px;
+  color: #495d76; font-size: 13px; line-height: 1.65; overflow-wrap: anywhere;
+}
+.skill-report-field dt { color: #617187; }
+.skill-report-field dd { margin: 0; min-width: 0; white-space: pre-wrap; }
+.skill-report-subsection { display: grid; gap: 8px; min-width: 0; }
+.skill-report-subsection h5 { margin: 0; color: #34465f; font-size: 13px; }
+.skill-report-subsection h5 > span { margin-left: 4px; }
+.skill-report-actions { display: grid; gap: 7px; margin: 0; padding-left: 20px; color: #495d76; font-size: 13px; line-height: 1.65; }
+.skill-report-actions li { white-space: pre-wrap; overflow-wrap: anywhere; }
+.skill-report-actions--section { padding: 0 16px 14px 35px; }
+
+.skill-case-row { grid-template-columns: minmax(0, 1fr) 70px 78px 105px 12px; }
+.skill-case-trigger { grid-template-columns: minmax(0, 1fr) 85px 76px 76px 78px 12px; }
+.skill-case-columns { padding-block: 6px; color: #586981; background: #f5f7fa; font-size: 12px; }
+.skill-case-columns > span:not(:first-child), .skill-case-cell { text-align: center; }
+.skill-case-title { color: #34445b; white-space: pre-wrap; }
+.skill-case-cell { color: #53657e; font-size: 12px; font-variant-numeric: tabular-nums; }
+.skill-case-score strong { color: var(--mode-color); font-size: 14px; }
+.skill-case-label, .skill-visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.skill-case-verdict {
+  justify-self: center; padding: 2px 7px; border-radius: 4px; color: #5d6c80;
+  background: #eef1f5; font-size: 11px; white-space: nowrap;
+}
+.skill-case-verdict.pass { color: #276a4a; background: #e9f6ef; }
+.skill-case-verdict.fail { color: #a83c44; background: #fceef0; }
+.skill-assertion-list { display: grid; gap: 8px; }
+.skill-assertion { display: grid; gap: 6px; padding: 9px 10px; border: 1px solid #e4eaf2; border-radius: 6px; background: #fff; }
+.skill-assertion-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 8px; }
+.skill-assertion-heading strong { flex: 1 1 160px; color: #34465f; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.skill-assertion > p { margin: 0; color: #495d76; font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.skill-state { margin: 0; padding: 22px 16px; text-align: center; color: #65748a; font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.skill-state--error {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 14px; text-align: left;
+  color: #b64b54; background: #fff4f4; border: 1px solid #f1d6d9; border-radius: 7px; white-space: pre-wrap;
+}
 .skill-state--error p { margin: 0; }
-.skill-task-info { color: #8c99ac; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
-.skill-task-info > summary { cursor: pointer; }
-.skill-task-info > div { margin: 6px 0 0 15px; }
-.skill-improvements { padding: 16px; border: 1px solid #e4eaf2; border-radius: 8px; background: #fff; }
-.skill-improvements ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
-.skill-improvements li { color: #4e617d; font-size: 13px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 .skill-report-notice { margin: 0; padding: 12px 14px; border-radius: 7px; color: #8d6c2f; background: #fff8e9; font-size: 12px; line-height: 1.8; }
-.skill-quality-case-columns, .skill-quality-case > summary { display: grid; grid-template-columns: 12px minmax(0, 1fr) 64px 72px 88px; gap: 12px; align-items: center; padding: 12px 14px; }
-.skill-quality-case-columns { padding-top: 4px; padding-bottom: 4px; color: #8b98ab; font-size: 11px; }
-.skill-quality-case-columns > span:nth-child(n+3) { text-align: center; }
-.skill-quality-case { min-width: 0; border: 1px solid #e1e7f0; border-radius: 8px; background: #fff; }
-.skill-quality-case > summary { cursor: pointer; list-style: none; font-size: 12px; color: #4b5f7d; }
-.skill-quality-case > summary::-webkit-details-marker { display: none; }
-.skill-quality-case > summary::before { content: '›'; color: #8a99b0; font-size: 17px; }
-.skill-quality-case[open] > summary::before { transform: rotate(90deg); }
-.skill-quality-case[open] > summary { background: #f5f8fc; border-bottom: 1px solid #e7edf5; }
-.skill-quality-case-title { line-height: 1.8; overflow-wrap: anywhere; }
-.skill-trigger-case-columns, .skill-trigger-case > summary { grid-template-columns: 12px minmax(0, 1fr) 76px 76px 76px 72px; }
-.skill-trigger-case-type, .skill-trigger-case-expect, .skill-trigger-case-actual { text-align: center; color: #60738f; font-size: 11px; }
-.skill-trigger-mobile-label { display: none; }
-.skill-quality-case-score { text-align: center; color: var(--mode-color); font-size: 17px; font-variant-numeric: tabular-nums; }
-.skill-quality-assertion-count { text-align: center; color: #60738f; font-variant-numeric: tabular-nums; }
-.skill-case-verdict { justify-self: center; padding: 3px 7px; border-radius: 4px; font-size: 11px; white-space: nowrap; color: #8794a7; background: #f0f3f7; }
-.skill-case-verdict.pass { color: #2f7d59; background: #edf7f1; }
-.skill-case-verdict.fail { color: #b44851; background: #fceef0; }
-.skill-quality-case-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #92a0b3; font-size: 11px; line-height: 1.8; overflow-wrap: anywhere; }
-.skill-quality-text h6 { margin: 0 0 7px; color: #7b8aa0; font-size: 11px; }
-.skill-quality-text p { margin: 0; color: #4d607c; font-size: 12px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; }
-.skill-assertion-card { padding: 13px; border: 1px solid #e6ebf2; border-radius: 7px; }
-.skill-assertion-heading { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 8px; }
-.skill-assertion-heading strong { flex: 1 1 220px; font-size: 12px; line-height: 1.8; color: #526683; overflow-wrap: anywhere; }
-.skill-assertion-priority { color: #8998ad; font-size: 11px; line-height: 1.8; }
-.skill-assertion-card > p { margin: 10px 0; color: #77879e; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 .skill-mode-pill.mode-static, .skill-mode-pill.mode-trigger, .skill-mode-pill.mode-quality { color: var(--mode-color); background: var(--mode-tint); border: 1px solid var(--mode-line); }
-.drawer-panel--skill button:focus-visible, .drawer-panel--skill summary:focus-visible, .drawer-panel--skill select:focus-visible { outline: 2px solid #3d6bcb; outline-offset: 3px; }
-@media (max-width: 760px) {
+.drawer-panel--skill button:focus-visible, .drawer-panel--skill summary:focus-visible, .drawer-panel--skill select:focus-visible { outline: 2px solid #3d6bcb; outline-offset: -2px; }
+
+@media (max-width: 680px) {
   .drawer-panel--skill { max-width: 100vw; width: 100%; }
-  .skill-drawer-header { padding: 16px; }
-  .skill-drawer-body { padding: 16px 12px 28px; gap: 18px; }
-  .skill-overview { padding: 17px 15px 12px; }
-  .skill-section-heading--small { flex-wrap: wrap; gap: 5px; }
-  .skill-overview-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 10px; }
-  .skill-overview-stats > div { padding-left: 12px; }
-  .skill-overview-stats > div:nth-child(odd) { padding-left: 0; border-left: 0; }
-  .skill-mode-switcher { grid-template-columns: 1fr; gap: 8px; }
-  .skill-mode-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; padding: 12px; }
-  .skill-mode-card-top { grid-column: 1 / -1; }
-  .skill-mode-card-count { grid-column: 2; grid-row: 2 / 4; align-self: center; white-space: nowrap; }
-  .skill-mode-card-foot { grid-column: 1; padding-top: 5px; }
-  .skill-mode-description { grid-column: 1; }
-  .skill-mode-panel-header { padding: 14px; }
-  .skill-results-toolbar { margin: 0 12px; }
-  .skill-result-card { margin: 0 12px 10px; }
-  .skill-result-toggle { padding: 13px; }
-  .skill-result-glance { gap: 7px 12px; }
-  .skill-report-field { grid-template-columns: 1fr; gap: 2px; }
-  .skill-item-fields { padding-left: 14px; }
-  .skill-disclosure-hint { display: none; }
-  .skill-dimension-disclosure > summary { grid-template-columns: 12px minmax(0, 1fr) 88px; }
-  .skill-quality-case-columns { display: none; }
-  .skill-quality-case > summary { grid-template-columns: 12px minmax(0, 1fr) 72px; gap: 8px 10px; }
-  .skill-quality-case > summary::before { grid-column: 1; grid-row: 1; }
-  .skill-quality-case-title { grid-column: 2; grid-row: 1; }
-  .skill-quality-case-score { grid-column: 3; grid-row: 1; }
-  .skill-quality-case > summary > .skill-case-verdict { grid-column: 2; grid-row: 2; justify-self: start; }
-  .skill-quality-assertion-count { grid-column: 3; grid-row: 2; font-size: 11px; }
-  .skill-quality-case > summary { grid-template-columns: 12px minmax(0, 1fr) 58px; gap: 8px; }
-  .skill-quality-case-title { grid-column: 2; }
-  .skill-quality-case-score { grid-column: 3; }
-  .skill-quality-case > summary > .skill-case-verdict { grid-column: 2; justify-self: start; }
-  .skill-quality-assertion-count { grid-column: 3; }
-  .skill-trigger-case > summary { grid-template-columns: 12px minmax(0, 1fr) 72px; }
-  .skill-trigger-case > summary > .skill-case-verdict { grid-column: 3; grid-row: 1; justify-self: center; }
-  .skill-trigger-case-type { grid-column: 2; grid-row: 2; text-align: left; }
-  .skill-trigger-case-expect { grid-column: 2; grid-row: 3; text-align: left; }
-  .skill-trigger-case-actual { grid-column: 2; grid-row: 4; text-align: left; }
-  .skill-trigger-mobile-label { display: inline; }
-  .skill-report-item-disclosure > summary { align-items: flex-start; }
+  .skill-drawer-header { padding: 12px 14px; gap: 8px; }
+  .skill-drawer-heading h3 { font-size: 17px; }
+  .skill-drawer-header > .status-pill { padding: 3px 6px; font-size: 11px; }
+  .skill-mode-switcher { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 0 12px; gap: 4px; }
+  .skill-mode-tab { flex-direction: column; gap: 4px; min-height: 52px; padding: 6px 3px; }
+  .skill-drawer-body { padding: 12px 12px 24px; scrollbar-gutter: auto; }
+  .skill-mode-panel { gap: 10px; }
+  .skill-report-section-head, .skill-report-row-head, .skill-report-row-body { padding-inline: 11px; }
+  .skill-report-overview { padding-inline: 11px; }
+  .skill-report-metric { padding: 8px; }
+  .skill-report-metric dd strong { font-size: 20px; }
+  .skill-report-actions--section { padding-inline: 30px 11px; }
+  .skill-case-columns { display: none; }
+  .skill-case-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto 10px; gap: 5px 8px; padding: 8px 11px;
+  }
+  .skill-case-row .skill-case-title { grid-area: 1 / 1 / 2 / 3; }
+  .skill-case-row .skill-case-verdict { grid-area: 1 / 3; justify-self: end; }
+  .skill-case-row::after { grid-area: 1 / 4; }
+  .skill-case-cell { grid-row: 2; text-align: left; }
+  .skill-case-type, .skill-case-score { grid-column: 1; }
+  .skill-case-expected { grid-column: 2; }
+  .skill-case-actual { grid-column: 3 / 5; }
+  .skill-case-assertions { grid-column: 2 / 5; }
+  .skill-case-label { position: static; width: auto; height: auto; margin: 0; clip-path: none; }
+}
+
+@media (max-width: 460px) {
+  .skill-report-field { grid-template-columns: minmax(0, 1fr); gap: 1px; }
+  .skill-report-fields { gap: 8px; }
 }
 
 /* ---- responsive ---- */
@@ -4029,7 +4136,6 @@ tbody tr:hover td { background: #f8f9fd; }
 .skill-name-link { border: 0; background: none; padding: 0; text-align: left; color: #3f5fc3; font-size: 14px; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
 .skill-mode-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: 1.4; text-align: left; cursor: pointer; }
 .skill-mode-meta { display: flex; flex: 0 0 100%; min-width: 0; flex-wrap: wrap; align-items: center; gap: 3px 8px; overflow-wrap: anywhere; }
-.skill-directory-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; color: #7a8798; font-size: 12px; margin-top: 10px; }
 .skill-mode-version, .skill-report-state { color: #7a8798; font-size: 12px; }
 .skill-list-hint { color: #7a8798; font-size: 12px; margin-left: auto; }
 .skill-cell-metric { color: #68768c; font-size: 12px; }
@@ -4043,8 +4149,6 @@ tbody tr:hover td { background: #f8f9fd; }
 .skill-submission-notice details { margin-top: 8px; }
 .skill-submission-notice summary { cursor: pointer; }
 .skill-mode-status.not_evaluated, .skill-mode-status.cancelled, .skill-mode-status.canceled { color: #68768c; background: #eef1f5; }
-.skill-mode-card > .skill-mode-status { align-self: flex-start; }
-.skill-result-detail { border-top: 0; }
 .eval-modal-btn:disabled, button.eval-filter-clear:disabled { opacity: .55; cursor: not-allowed; }
 .eval-modal-overlay { z-index: 4000; }
 
