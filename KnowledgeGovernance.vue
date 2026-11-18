@@ -806,10 +806,13 @@
 
     <!-- 新建评测任务弹窗 -->
     <div v-if="evalModalVisible" class="eval-modal-overlay" @click.self="closeEvalModal">
-      <div class="eval-modal">
+      <div class="eval-modal" :class="{ 'eval-modal--skill': evalForm.taskType === 'skill' }">
         <div class="eval-modal-head">
-          <h3>{{ evalForm.taskType === 'skill' ? '发起 Skill 评测' : '新建评测任务' }}</h3>
-          <button class="eval-modal-close" @click="closeEvalModal">&times;</button>
+          <div class="eval-modal-heading">
+            <h3>{{ evalForm.taskType === 'skill' ? '发起 Skill 评测' : '新建评测任务' }}</h3>
+            <p v-if="skillEvaluationTarget" class="skill-modal-target">{{ skillEvaluationTarget.skill_name || skillEvaluationTarget.name || '未命名 Skill' }}</p>
+          </div>
+          <button type="button" class="eval-modal-close" aria-label="关闭" @click="closeEvalModal">&times;</button>
         </div>
         <div class="eval-modal-body">
           <!-- 知识增益评测仍保留任务名称 -->
@@ -891,14 +894,15 @@
 
           <!-- Skill评测：评测模式 + Skill 勾选 -->
           <fieldset v-if="evalForm.taskType === 'skill'" class="skill-modal-fieldset" :disabled="skillSubmitting">
-            <p v-if="skillEvaluationTarget" class="skill-overview-note">评测 Skill：<strong>{{ skillEvaluationTarget.skill_name || skillEvaluationTarget.name || '未命名 Skill' }}</strong>，选择评测模式即可发起。</p>
-            <p v-else class="skill-overview-note">选择 Skill 和评测模式即可发起；结果在对应 Skill 下更新。</p>
-            <div class="eval-modal-field">
-              <label class="eval-modal-label">
-                评测模式 <span class="eval-required">*</span>
-              </label>
-              <div class="eval-mode-list eval-mode-list--inline">
-                <label v-for="mode in skillEvalModes" :key="mode.key" class="eval-mode-item" :class="skillModeClass(mode.key)">
+            <fieldset class="skill-modal-mode-field">
+              <legend class="skill-modal-field-label">选择评测模式 <span class="skill-modal-field-hint">可多选</span></legend>
+              <div class="skill-modal-mode-list">
+                <label
+                    v-for="mode in skillEvalModes"
+                    :key="mode.key"
+                    class="eval-mode-item"
+                    :class="[skillModeClass(mode.key), { active: skillForm.modes.has(mode.key) }]"
+                >
                   <input
                       type="checkbox"
                       :checked="skillForm.modes.has(mode.key)"
@@ -907,13 +911,13 @@
                   <span class="eval-mode-label">{{ mode.label }}</span>
                 </label>
               </div>
-            </div>
+            </fieldset>
 
-            <div v-if="!skillEvaluationTarget" class="eval-modal-field">
-              <label class="eval-modal-label">
-                选择 Skill <span class="eval-required">*</span>
+            <div v-if="!skillEvaluationTarget">
+              <div class="skill-modal-picker-heading">
+                <span class="skill-modal-field-label">选择 Skill</span>
                 <span class="skill-selected-count">已选 {{ skillForm.selected.size }} 个</span>
-              </label>
+              </div>
               <div class="skill-picker">
                 <div class="skill-picker-search">
                   <input
@@ -3734,8 +3738,38 @@ tbody tr:hover td { background: #f8f9fd; }
 .skill-progress { font-size: 13px; color: #303133; font-variant-numeric: tabular-nums; }
 .skill-progress-failed { color: #d04040; font-size: 12px; }
 
+/* ---- 发起 Skill 评测 ---- */
+.eval-modal--skill .eval-modal-head { align-items: flex-start; gap: 16px; }
+.eval-modal--skill .eval-modal-close { flex-shrink: 0; }
+.eval-modal-heading { min-width: 0; }
+.skill-modal-target { margin: 4px 0 0; color: #5b687d; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.eval-modal--skill .eval-modal-body { padding: 18px 24px; }
+.skill-modal-fieldset, .skill-modal-mode-field { min-width: 0; margin: 0; padding: 0; border: 0; }
+.skill-modal-fieldset { display: grid; gap: 18px; }
+.skill-modal-field-label { padding: 0; color: #303133; font-size: 14px; font-weight: 600; line-height: 20px; }
+.skill-modal-mode-field > legend { margin-bottom: 8px; }
+.skill-modal-field-hint { margin-left: 4px; color: #647084; font-size: 12px; font-weight: 400; }
+.skill-modal-mode-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.skill-modal-mode-list .eval-mode-item {
+  min-height: 44px; box-sizing: border-box; justify-content: center; padding: 8px; background: #fff;
+}
+.skill-modal-mode-list .eval-mode-item input[type="checkbox"] { flex-shrink: 0; margin: 0; accent-color: var(--mode-color); }
+.skill-modal-mode-list .eval-mode-label { font-size: 13px; overflow-wrap: anywhere; }
+.skill-modal-mode-list .eval-mode-item.active { border-color: var(--mode-line); background: var(--mode-tint); }
+.skill-modal-mode-list .eval-mode-item.active .eval-mode-label { color: var(--mode-color); }
+.skill-modal-picker-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.skill-selected-count { font-size: 12px; color: #5269d4; white-space: nowrap; }
+.skill-modal-fieldset > .eval-modal-error { margin: 0; }
+@media (max-width: 480px) {
+  .eval-modal--skill .eval-modal-head, .eval-modal--skill .eval-modal-body, .eval-modal--skill .eval-modal-foot { padding-inline: 16px; }
+  .skill-modal-mode-list { gap: 6px; }
+  .skill-modal-mode-list .eval-mode-item { gap: 5px; padding-inline: 5px; }
+}
+@media (max-width: 360px) {
+  .skill-modal-mode-list { grid-template-columns: 1fr; }
+}
+
 /* ---- Skill 选择器 ---- */
-.skill-selected-count { margin-left: 8px; font-size: 12px; font-weight: 400; color: #5269d4; }
 .skill-picker {
   border: 1px solid #e1e5ed; border-radius: 8px; background: #fafbfc; overflow: hidden;
 }
@@ -3784,7 +3818,6 @@ tbody tr:hover td { background: #f8f9fd; }
   background: #fff; color: #303133; font-size: 12px; cursor: pointer;
 }
 .skill-picker-pager button:disabled { color: #c0c4cc; cursor: not-allowed; background: #f4f4f5; }
-.eval-mode-list--inline { flex-direction: row; flex-wrap: wrap; justify-content: center; gap: 16px; }
 
 /* ---- Skill 评测结果：概览、模式与明细层级 ---- */
 .drawer-panel--skill { width: 1120px; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; background: #f5f7fb; color: #24324a; }
@@ -4012,7 +4045,6 @@ tbody tr:hover td { background: #f8f9fd; }
 .skill-mode-card > .skill-mode-status { align-self: flex-start; }
 .skill-result-detail { border-top: 0; }
 .eval-modal-btn:disabled, button.eval-filter-clear:disabled { opacity: .55; cursor: not-allowed; }
-.skill-modal-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .eval-modal-overlay { z-index: 4000; }
 
 </style>
