@@ -1721,6 +1721,8 @@ function normalizeSkillReport(raw: Record<string, any>): Record<string, any> {
     if (key === 'results' && !Array.isArray(inner.results)) delete report.results;
     else if (key !== 'results') delete report[key];
   }
+  // 详情页省略重复的 D10 通用评分说明。
+  delete report.d10_low_confidence_note;
   return report;
 }
 // ---- Skill 报告渲染：每项内容归入对应区块，保留证据、零值与未知字段 ----
@@ -1747,7 +1749,7 @@ const REPORT_FIELD_LABELS: Record<string, string> = {
   actual_trigger: '实际触发', expect_trigger: '预期触发', rationale: '评分依据', feedback: '反馈',
   pattern: '技能形态', confidence: '置信度', model_name: '评测模型', skill_name: 'Skill 名称',
   spec_source: '评分规范', evaluated_at: '评测时间', gate_blocked: '门禁阻断',
-  d10_low_confidence_note: 'D10 低置信度说明', raw_score: '调整前得分',
+  raw_score: '调整前得分',
   adjustment_reason: '调整原因', derivation_reason: '得分推导依据', adjusted_by_precheck: '经预检调整', low_confidence: '低置信度',
   knowledge_ratio: '知识构成', metric_glossary: '评分说明', dimensions: '维度评分标准',
   precheck_constraints: '预检信息', consistency_checks: '一致性检查',
@@ -2079,7 +2081,7 @@ const REPORT_PRIMARY_METRICS: Record<string, string[][]> = {
   TRIGGER: [['passed_cases'], ['pass_rate', 'accuracy'], ['positive_trigger_rate'], ['negative_false_trigger_rate']],
   QUALITY: [['score', 'overall_score', 'total_score', 'total', 'average_score', 'avg_score', 'average_case_score'], ['passed_cases'], ['pass_rate'], ['assertions_passed']],
 };
-const REPORT_OVERVIEW_KEYS = new Set(['summary', 'conclusion', 'gate_blocked', 'd10_low_confidence_note', 'content']);
+const REPORT_OVERVIEW_KEYS = new Set(['summary', 'conclusion', 'gate_blocked', 'content']);
 const activeSkillReport = computed(() => {
   const report = activeSkillResult.value?.result?.report;
   if (!report) return null;
