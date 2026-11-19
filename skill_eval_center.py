@@ -20,36 +20,65 @@ except ImportError:
 
 
 class SkillCatalog(Protocol):
-    def query_scope_offering_ids(self, offering_id=None, pdu=None, department=None): ...
-    def query_product_by_offering_id(self, offering_id): ...
-    def query_evaluable_skills(self, offering_ids, keyword=None, page=1, page_size=10): ...
+    def query_scope_offering_ids(self, offering_id=None, pdu=None, department=None):
+        ...
+
+    def query_product_by_offering_id(self, offering_id):
+        ...
+
+    def query_evaluable_skills(self, offering_ids, keyword=None, page=1, page_size=10):
+        ...
+
     def query_skill_eval_result_skills(self, offering_ids, keyword=None, page=1, page_size=10,
-                                      skill_ids=None): ...
-    def query_skill_eval_name_owners(self, skill_names): ...
-    def query_skill_infos_by_ids(self, skill_ids): ...
-    def query_skill_scope_products(self, skill_ids, offering_ids): ...
-    def update_skill_package_info(self, skill_id, skill_package_url, version): ...
+                                      skill_ids=None):
+        ...
+
+    def query_skill_eval_name_owners(self, skill_names):
+        ...
+
+    def query_skill_infos_by_ids(self, skill_ids):
+        ...
+
+    def query_skill_scope_products(self, skill_ids, offering_ids):
+        ...
+
+    def update_skill_package_info(self, skill_id, skill_package_url, version):
+        ...
 
 
 class PackageResolver(Protocol):
-    def resolve(self, skill_info: dict, offering_ids: list) -> Tuple[str, str]: ...
+    def resolve(self, skill_info: dict, offering_ids: list) -> Tuple[str, str]:
+        ...
 
 
 class HarnessGateway(Protocol):
-    def fetch_skills(self, first_scene, second_scene, dim_type, dim_name): ...
-    def fetch_scenes(self, dim_code): ...
+    def fetch_skills(self, first_scene, second_scene, dim_type, dim_name):
+        ...
+
+    def fetch_scenes(self, dim_code):
+        ...
 
 
 class EvaluationGateway(Protocol):
-    def trigger(self, mode, skill, creator, model=None, agent=None, description=None): ...
-    def fetch_all_tasks(self, skill_name=None, eval_mode=None): ...
-    def fetch_latest_tasks(self, skill_names): ...
-    def fetch_report(self, mode, external_task_id, updated_at=None): ...
+    def trigger(self, mode, skill, creator, model=None, agent=None, description=None):
+        ...
+
+    def fetch_all_tasks(self, skill_name=None, eval_mode=None):
+        ...
+
+    def fetch_latest_tasks(self, skill_names):
+        ...
+
+    def fetch_report(self, mode, external_task_id, updated_at=None):
+        ...
 
 
 class HttpTransport(Protocol):
-    def get(self, url: str, **kwargs) -> Any: ...
-    def post(self, url: str, **kwargs) -> Any: ...
+    def get(self, url: str, **kwargs) -> Any:
+        ...
+
+    def post(self, url: str, **kwargs) -> Any:
+        ...
 
 
 class EvaluationModeStrategy(ABC):
@@ -57,24 +86,30 @@ class EvaluationModeStrategy(ABC):
 
     @property
     @abstractmethod
-    def key(self): ...
+    def key(self):
+        ...
 
     @property
     @abstractmethod
-    def name(self): ...
+    def name(self):
+        ...
 
     @property
     @abstractmethod
-    def submit_path(self): ...
+    def submit_path(self):
+        ...
 
     @abstractmethod
-    def fields(self, common, model=None, agent=None, description=None): ...
+    def fields(self, common, model=None, agent=None, description=None):
+        ...
 
     @abstractmethod
-    def report_path(self, task_id): ...
+    def report_path(self, task_id):
+        ...
 
     @abstractmethod
-    def extract_report(self, data): ...
+    def extract_report(self, data):
+        ...
 
 
 class StaticEvaluationStrategy(EvaluationModeStrategy):
@@ -462,9 +497,7 @@ class SkillEvaluationHttpClient:
                 name = task.get("skill_name")
                 if not name or (name_filter is not None and name != name_filter):
                     continue
-                task_modes = set(task.get("eval_modes") or ())
-                task_modes.update((task.get("mode_states") or {}).keys())
-                task_modes.intersection_update(RESULT_MODES)
+                task_modes = _result_task_modes(task)
                 if not task_modes:
                     continue
                 order = _task_order(task)
@@ -593,63 +626,67 @@ class HarnessPackageResolver:
         return None
 
     def resolve(self, skill_info, offering_ids):
-        """解析 Skill 包地址与版本号。
-        优先用库内字段；缺失时按 Skill 场景 + 产品名从 harness 实时查询最新版本。
-        库内场景缺失或不匹配时，回退到该产品在 harness 中的全部场景逐一查找。"""
+        """优先使用库内包信息，缺失时查询 harness 并回填。"""
         package_url = skill_info.get("skill_package_url")
         version = skill_info.get("version")
         if package_url and version:
             return package_url, version
 
-        target_name = skill_info.get("name")
-        db_scene = {
-            "firstScene": skill_info.get("level1"),
-            "secondScene": skill_info.get("level2"),
-        }
-        has_db_scene = bool(db_scene["firstScene"] and db_scene["secondScene"])
+        package_url, version = self._resolve_harness_package(skill_info, offering_ids)
+        skill_id = skill_info.get("skill_id")
+        try:
+            self.catalog.update_skill_package_info(skill_id, package_url, version)
+        except Exception as error:
+            self.logger.warning(f"回填 Skill 包信息失败: {skill_id}, {error}")
+        return package_url, version
 
+    def _resolve_harness_package(self, skill_info, offering_ids):
+        skill_name = skill_info.get("name")
+        products = self._products_for_offerings(offering_ids)
+        if not products:
+            raise ValueError(f"Skill {skill_name} 未找到关联产品，无法在 harness 中定位评测包")
+
+        first_scene = skill_info.get("level1")
+        second_scene = skill_info.get("level2")
+        preferred_scenes = []
+        if first_scene and second_scene:
+            preferred_scenes.append({"firstScene": first_scene, "secondScene": second_scene})
+
+        for offering_id, product_name in products:
+            package = self._find_product_package(
+                skill_name, offering_id, product_name, preferred_scenes)
+            if package:
+                return package
+
+        product_names = ", ".join(name for _, name in products)
+        scene_hint = (f"{first_scene}/{second_scene}" if preferred_scenes else
+                      "库内场景为空，已按产品全部场景查询")
+        raise ValueError(
+            f"Skill {skill_name} 在 harness 中未找到可用包"
+            f"（产品: {product_names}，场景: {scene_hint}）")
+
+    def _products_for_offerings(self, offering_ids):
         products = []
         for offering_id in offering_ids or []:
             product = self.catalog.query_product_by_offering_id(offering_id)
-            if product and product.get("product_name"):
-                pair = (offering_id, product["product_name"])
-                if pair not in products:
-                    products.append(pair)
-        if not products:
-            raise ValueError(f"Skill {target_name} 未找到关联产品，无法在 harness 中定位评测包")
-
-        for offering_id, product_name in products:
-            # 先用库内场景查找；未命中时再枚举该产品的全部场景
-            scenes = [db_scene] if has_db_scene else []
-            found = self._find_package(target_name, scenes, product_name) if scenes else None
-            if not found:
-                try:
-                    extra_scenes = [s for s in self.harness.fetch_scenes(offering_id)
-                                    if s not in scenes]
-                except Exception as e:
-                    self.logger.warning(f"查询 harness 场景列表失败: offering_id={offering_id}, {e}")
-                    extra_scenes = []
-                if extra_scenes:
-                    found = self._find_package(target_name, extra_scenes, product_name)
-            if not found:
+            if not product or not product.get("product_name"):
                 continue
-            package_url, version = found
+            pair = (offering_id, product["product_name"])
+            if pair not in products:
+                products.append(pair)
+        return products
 
-            # 回填库内字段，后续查询/评测不再重复解析
-            try:
-                self.catalog.update_skill_package_info(
-                    skill_info.get("skill_id"), package_url, version)
-            except Exception as e:
-                self.logger.warning(f"回填 Skill 包信息失败: {skill_info.get('skill_id')}, {e}")
-            return package_url, version
-
-        product_names = ", ".join(name for _, name in products)
-        scene_hint = (f"{db_scene['firstScene']}/{db_scene['secondScene']}"
-                      if has_db_scene else "库内场景为空，已按产品全部场景查询")
-        raise ValueError(
-            f"Skill {target_name} 在 harness 中未找到可用包"
-            f"（产品: {product_names}，场景: {scene_hint}）")
-
+    def _find_product_package(self, skill_name, offering_id, product_name, preferred_scenes):
+        package = self._find_package(skill_name, preferred_scenes, product_name)
+        if package:
+            return package
+        try:
+            other_scenes = [scene for scene in self.harness.fetch_scenes(offering_id)
+                            if scene not in preferred_scenes]
+        except Exception as error:
+            self.logger.warning(f"查询 harness 场景列表失败: offering_id={offering_id}, {error}")
+            return None
+        return self._find_package(skill_name, other_scenes, product_name)
 
 
 # ── 按 Skill 查询与直接提交 ──
@@ -684,6 +721,13 @@ def _task_order(task):
     updated = _timestamp(task.get("updated_at"))
     return (updated if updated != float("-inf") else created,
             created, str(task.get("task_id") or ""))
+
+
+def _result_task_modes(task):
+    modes = set(task.get("eval_modes") or ())
+    modes.update((task.get("mode_states") or {}).keys())
+    modes.intersection_update(RESULT_MODES)
+    return modes
 
 
 def _empty_mode():
@@ -799,26 +843,57 @@ class SkillEvaluationService:
         """
         started = time.monotonic()
         offering_ids = self._validate_scope(offering_id, pdu, department)
-        page = max(int(page), 1)
-        page_size = min(max(int(page_size), 1), 100)
-        filters = {"keyword": keyword, "page": page, "page_size": page_size}
+        result = self._query_result_page(offering_ids, keyword, page, page_size, skill_ids)
+        skills = result["items"]
+        if not skills:
+            return result
+        by_name = self._matchable_result_skills(skills)
+        if not by_name:
+            return result
+
+        catalog_done = time.monotonic()
+        latest = self._latest_result_tasks(by_name)
+        tasks_done = time.monotonic()
+        report_count = self._apply_result_tasks(by_name, latest, include_reports)
+        for item in by_name.values():
+            item["status"] = _skill_status(item["modes"])
+
+        finished = time.monotonic()
+        self.logger.info(
+            f"Skill 评测结果查询耗时: include_reports={include_reports}, skills={len(skills)}, "
+            f"reports={report_count}, catalog_ms={(catalog_done - started) * 1000:.0f}, "
+            f"tasks_ms={(tasks_done - catalog_done) * 1000:.0f}, "
+            f"reports_ms={(finished - tasks_done) * 1000:.0f}, "
+            f"total_ms={(finished - started) * 1000:.0f}")
+        return result
+
+    def _query_result_page(self, offering_ids, keyword, page, page_size, skill_ids):
+        filters = {
+            "keyword": keyword,
+            "page": max(int(page), 1),
+            "page_size": min(max(int(page_size), 1), 100),
+        }
         if skill_ids is not None:
             if len(skill_ids) > 100:
                 raise ValueError("skill_ids 一次最多传 100 个")
             filters["skill_ids"] = list(dict.fromkeys(skill_ids))
-        result = self.catalog.query_skill_eval_result_skills(offering_ids, **filters)
-        result = dict(result)
+        result = dict(self.catalog.query_skill_eval_result_skills(offering_ids, **filters))
         skills = []
         for info in result.get("items", []):
             item = dict(info)
-            item.update({"skill_id": info["skill_id"], "skill_name": _skill_name(info),
-                         "modes": {mode: _empty_mode() for mode in RESULT_MODES},
-                         "match_status": "unmatched", "match_error": None})
+            item.update({
+                "skill_id": info["skill_id"],
+                "skill_name": _skill_name(info),
+                "modes": {mode: _empty_mode() for mode in RESULT_MODES},
+                "match_status": "unmatched",
+                "match_error": None,
+                "status": "not_evaluated",
+            })
             skills.append(item)
         result["items"] = skills
-        if not skills:
-            return result
+        return result
 
+    def _matchable_result_skills(self, skills):
         # 名称是否唯一要检查全库，不能只检查当前部门或当前页。
         owners = self.catalog.query_skill_eval_name_owners([item["skill_name"] for item in skills])
         by_name = {}
@@ -832,63 +907,60 @@ class SkillEvaluationService:
                 item["match_error"] = "同名对应多个 Skill，外部任务缺少 skill_id，无法可靠关联"
             else:
                 by_name[name] = item
-        if not by_name:
-            for item in skills:
-                item["status"] = _skill_status(item["modes"])
-            return result
+        return by_name
 
-        latest = {}
-        catalog_done = time.monotonic()
+    def _fetch_result_tasks(self, by_name):
+        fetch_latest = getattr(self.gateway, "fetch_latest_tasks", None)
+        if callable(fetch_latest):
+            return fetch_latest(by_name)
         # 只匹配一个名称时利用服务端模糊筛选，随后仍按名称精确关联。
         name_filter = next(iter(by_name)) if len(by_name) == 1 else None
-        fetch_latest = getattr(self.gateway, "fetch_latest_tasks", None)
-        tasks = (fetch_latest(by_name) if callable(fetch_latest) else
-                 self.gateway.fetch_all_tasks(skill_name=name_filter))
-        for task in tasks:
+        return self.gateway.fetch_all_tasks(skill_name=name_filter)
+
+    def _latest_result_tasks(self, by_name):
+        latest, orders = {}, {}
+        for task in self._fetch_result_tasks(by_name):
             name = task.get("skill_name")
             if name not in by_name:
                 continue
-            task_modes = set(task.get("eval_modes") or ())
-            task_modes.update((task.get("mode_states") or {}).keys())
-            if task_modes.intersection(RESULT_MODES) and _task_order(task)[0] == float("-inf"):
+            task_modes = _result_task_modes(task)
+            if not task_modes:
+                continue
+            order = _task_order(task)
+            if order[0] == float("-inf"):
                 raise RuntimeError("匹配的评测任务缺少有效 updated_at/created_at，无法判断最新记录")
             for mode in RESULT_MODES:
                 if mode not in task_modes:
                     continue
                 key = (name, mode)
-                if key not in latest or _task_order(task) > _task_order(latest[key]):
+                if key not in orders or order > orders[key]:
+                    orders[key] = order
                     latest[key] = task
+        return latest
 
-        tasks_done = time.monotonic()
+    def _apply_result_tasks(self, by_name, latest, include_reports):
         pending_reports = {}
         for (name, mode), task in latest.items():
             item = by_name[name]
             item["match_status"] = "matched"
             value = self._mode_result(task, mode)
             item["modes"][mode] = value
-            if value["status"] == "completed":
-                value["report_status"] = "unloaded"
-                if include_reports:
-                    pending_reports.setdefault(
-                        (mode, task["task_id"], str(task.get("updated_at") or "")), []).append(value)
+            if value["status"] != "completed":
+                continue
+            value["report_status"] = "unloaded"
+            if include_reports:
+                pair = (mode, task["task_id"], str(task.get("updated_at") or ""))
+                pending_reports.setdefault(pair, []).append(value)
         # 只读当前页的最新报告，避免对所有历史任务逐个读取报告。
         if pending_reports:
-            for pair, report, error in self._report_executor.map(self._load_report, pending_reports):
-                for value in pending_reports[pair]:
-                    value["report"] = report
-                    value["report_error"] = error
-                    value["report_status"] = ("error" if error else
-                                              "ready" if report is not None else "pending")
-        for item in skills:
-            item["status"] = _skill_status(item["modes"])
-        finished = time.monotonic()
-        self.logger.info(
-            f"Skill 评测结果查询耗时: include_reports={include_reports}, skills={len(skills)}, "
-            f"reports={len(pending_reports)}, catalog_ms={(catalog_done - started) * 1000:.0f}, "
-            f"tasks_ms={(tasks_done - catalog_done) * 1000:.0f}, "
-            f"reports_ms={(finished - tasks_done) * 1000:.0f}, "
-            f"total_ms={(finished - started) * 1000:.0f}")
-        return result
+            self._fill_reports(pending_reports)
+        return len(pending_reports)
+
+    def _fill_reports(self, pending_reports):
+        for pair, report, error in self._report_executor.map(self._load_report, pending_reports):
+            report_status = "error" if error else ("ready" if report is not None else "pending")
+            for value in pending_reports[pair]:
+                value.update(report=report, report_error=error, report_status=report_status)
 
     def create_skill_eval_batch(self, skill_ids, modes, offering_id=None, pdu=None,
                                 department=None, batch_name=None, creator=None,
