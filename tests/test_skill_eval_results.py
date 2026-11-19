@@ -5,10 +5,12 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock, call
 
 from skill_eval_center import (
-    RESULT_MODES, SkillEvaluationHttpClient, SkillEvaluationService,
-    TaskStatePolicy, ThreadLocalHttpTransport, default_mode_registry,
+    RESULT_MODES, HarnessGateway, HarnessPackageResolver, SkillCatalog,
+    SkillEvaluationHttpClient, SkillEvaluationService, TaskStatePolicy,
+    ThreadLocalHttpTransport, default_mode_registry,
 )
 
 
@@ -160,6 +162,27 @@ class ResultsTests(unittest.TestCase):
         self.assertEqual([], http.task_calls)
         self.assertEqual([], http.report_calls)
 
+    def test_legacy_gateway_matches_exact_name_and_reads_mode_states(self):
+        catalog, _, _, service = self.make_service(2)
+        catalog.items[1]["skill_name"] = ""
+        older = task("skill-000", 1, ["STATIC"])
+        newer = task("skill-000", 2, [], "EXECUTING")
+        newer["mode_states"] = {"STATIC": {"state": "FAILED"}}
+        fuzzy_match = task("skill-000-extra", 3)
+        fuzzy_match["created_at"] = fuzzy_match["updated_at"] = None
+        gateway = Mock(spec=["fetch_all_tasks"])
+        gateway.fetch_all_tasks.return_value = [older, fuzzy_match, newer]
+        service.gateway = gateway
+
+        result = service.get_skill_eval_results(offering_id="product", include_reports=False)
+
+        matched, missing_name = result["items"]
+        self.assertEqual("failed", matched["status"])
+        self.assertEqual("2", matched["modes"]["STATIC"]["external_task_id"])
+        self.assertEqual("missing_name", missing_name["match_status"])
+        self.assertEqual("not_evaluated", missing_name["status"])
+        gateway.fetch_all_tasks.assert_called_once_with(skill_name="skill-000")
+
     def test_all_task_pages_use_all_platforms_and_single_flight_index(self):
         _, http, gateway, _ = self.make_service(250)
         names = ["skill-000", "skill-001", "skill-099", "skill-200", "skill-249"]
@@ -245,6 +268,51 @@ class ResultsTests(unittest.TestCase):
             result = list(executor.map(work, range(2)))
         self.assertEqual(2, len(sessions))
         self.assertIsNot(result[0], result[1])
+
+
+class PackageResolverTests(unittest.TestCase):
+    def setUp(self):
+        self.catalog = Mock(spec=SkillCatalog)
+        self.harness = Mock(spec=HarnessGateway)
+        self.logger = logging.getLogger("skill-eval-resolver-tests")
+        self.resolver = HarnessPackageResolver(self.catalog, self.harness, self.logger)
+        self.skill = {"skill_id": "1", "name": "skill", "level1": "first", "level2": "preferred"}
+
+    def test_complete_catalog_package_skips_harness(self):
+        self.skill.update(skill_package_url="cached-url", version="1")
+
+        self.assertEqual(("cached-url", "1"), self.resolver.resolve(self.skill, ["product"]))
+        self.assertEqual([], self.catalog.mock_calls)
+        self.assertEqual([], self.harness.mock_calls)
+
+    def test_package_search_falls_back_across_products_and_scenes(self):
+        self.catalog.query_product_by_offering_id.side_effect = (
+            lambda offering_id: {"product_name": offering_id})
+        self.catalog.update_skill_package_info.side_effect = RuntimeError("database unavailable")
+        self.harness.fetch_scenes.side_effect = [RuntimeError("harness unavailable"), [
+            {"firstScene": "first", "secondScene": "preferred"},
+            {"firstScene": "first", "secondScene": "fallback"},
+        ]]
+        self.harness.fetch_skills.side_effect = [[], [], [{"skillName": "skill", "versions": [
+            {"downloadUrl": "latest-url", "version": "2"},
+            {"downloadUrl": "older-url", "version": "1"},
+        ]}]]
+
+        with self.assertLogs(self.logger, level="WARNING"):
+            package = self.resolver.resolve(self.skill, ["product-a", "product-b"])
+
+        self.assertEqual(("latest-url", "2"), package)
+        self.catalog.update_skill_package_info.assert_called_once_with("1", "latest-url", "2")
+        self.assertEqual([
+            call.fetch_skills(first_scene="first", second_scene="preferred",
+                              dim_type="产品级", dim_name="product-a"),
+            call.fetch_scenes("product-a"),
+            call.fetch_skills(first_scene="first", second_scene="preferred",
+                              dim_type="产品级", dim_name="product-b"),
+            call.fetch_scenes("product-b"),
+            call.fetch_skills(first_scene="first", second_scene="fallback",
+                              dim_type="产品级", dim_name="product-b"),
+        ], self.harness.mock_calls)
 
 
 if __name__ == "__main__":
