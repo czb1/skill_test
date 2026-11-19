@@ -99,6 +99,7 @@ class ResultsTests(unittest.TestCase):
         service = SkillEvaluationService(catalog, None, gateway, modes,
                                         TaskStatePolicy({"EXECUTING": "running"}), logger)
         self.addCleanup(gateway._page_executor.shutdown)
+        self.addCleanup(gateway._name_executor.shutdown)
         self.addCleanup(service._report_executor.shutdown)
         return catalog, http, gateway, service
 
@@ -161,16 +162,39 @@ class ResultsTests(unittest.TestCase):
 
     def test_all_task_pages_use_all_platforms_and_single_flight_index(self):
         _, http, gateway, _ = self.make_service(250)
-        names = ["skill-000", "skill-200"]
+        names = ["skill-000", "skill-001", "skill-099", "skill-200", "skill-249"]
         with ThreadPoolExecutor(max_workers=4) as executor:
             results = list(executor.map(lambda _: gateway.fetch_latest_tasks(names), range(4)))
-        self.assertTrue(all(len(rows) == 2 for rows in results))
+        self.assertTrue(all({row["skill_name"] for row in rows} == set(names) for rows in results))
         self.assertEqual(3, len(http.task_calls))
         self.assertEqual({1, 2, 3}, {call["page"] for call in http.task_calls})
         self.assertTrue(all(call["platform_type"] == "all" for call in http.task_calls))
         self.assertTrue(all("creator" not in call and "state" not in call for call in http.task_calls))
-        results[0][0]["skill_name"] = "mutated"
-        self.assertNotEqual("mutated", gateway.fetch_latest_tasks(names)[0]["skill_name"])
+        results[0][0]["eval_modes"].clear()
+        self.assertEqual(list(RESULT_MODES), gateway.fetch_latest_tasks(names)[0]["eval_modes"])
+        self.assertEqual(["skill-200"], [row["skill_name"] for row in
+                                        gateway.fetch_latest_tasks(["skill-200"])])
+        self.assertEqual(3, len(http.task_calls), "详细查询也复用完整任务索引")
+
+    def test_cold_small_scope_filters_tasks_and_keeps_latest_mode_from_later_pages(self):
+        history = [task("skill-000", i, ["STATIC"]) for i in range(100)]
+        latest = task("skill-000", 100, ["QUALITY"], "EXECUTING")
+        fuzzy_match = task("skill-000-other", 101)
+        fuzzy_match["created_at"] = fuzzy_match["updated_at"] = None
+        unrelated = [task(f"other-{i}", i + 103) for i in range(200)]
+        _, http, gateway, service = self.make_service(
+            2, history + [latest, fuzzy_match, task("skill-001", 102)] + unrelated)
+
+        result = service.get_skill_eval_results(offering_id="product", include_reports=False)
+
+        self.assertEqual("100", result["items"][0]["modes"]["QUALITY"]["external_task_id"])
+        self.assertEqual("running", result["items"][0]["modes"]["QUALITY"]["status"])
+        self.assertEqual("completed", result["items"][0]["modes"]["STATIC"]["status"])
+        self.assertEqual({("skill-000", 1), ("skill-000", 2), ("skill-001", 1)},
+                         {(call["skill_name"], call["page"]) for call in http.task_calls})
+        self.assertTrue(all(call["platform_type"] == "all" for call in http.task_calls))
+        gateway.fetch_latest_tasks(["skill-000"])
+        self.assertEqual(3, len(http.task_calls), "重复读取复用已筛选索引")
 
     def test_submission_timeout_invalidates_task_index(self):
         _, http, gateway, _ = self.make_service(2)
@@ -180,7 +204,7 @@ class ResultsTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             gateway.trigger("STATIC", {"skill_package_url": "url", "version": "1"}, "user")
         gateway.fetch_latest_tasks(names)
-        self.assertEqual(2, len(http.task_calls))
+        self.assertEqual(sorted(names * 2), sorted(call["skill_name"] for call in http.task_calls))
 
     def test_missing_report_and_report_error_are_not_ready(self):
         for code, expected in ((404, "pending"), (500, "error")):

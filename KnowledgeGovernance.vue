@@ -1090,7 +1090,7 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue';
+import { ref, shallowRef, reactive, computed, watch, nextTick, onBeforeUnmount } from 'vue';
 import { use } from 'echarts/core';
 import { BarChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
@@ -1372,8 +1372,8 @@ function searchEvaluableSkills() { if (skillSubmitting.value) return; pickerSess
 function goSkillListPage(page: number) { if (page < 1 || page > skillListTotalPages.value || page === skillListPage.value) return; skillListPage.value = page; void loadEvaluableSkills(); }
 
 // 收齐轻量状态后筛选分页；只加载当前显示页、抽屉与待确认记录的报告。
-const scopedSkillResults = ref<SkillEvalSkillResult[]>([]);
-const observedSkillResults = ref<SkillEvalSkillResult[]>([]);
+const scopedSkillResults = shallowRef<SkillEvalSkillResult[]>([]);
+const observedSkillResults = shallowRef<SkillEvalSkillResult[]>([]);
 const skillReportLoadedAt = new Map<string, number>();
 function shouldDisplaySkillResult(skill: SkillEvalSkillResult): boolean {
   if (skill.skill_status !== '已完成' || hasSkillMatchError(skill)) return false;
@@ -1387,15 +1387,12 @@ function shouldDisplaySkillResult(skill: SkillEvalSkillResult): boolean {
     return evaluating || generatingReport || hasReport;
   });
 }
-const displayedSkillResults = computed(() => scopedSkillResults.value.filter(shouldDisplaySkillResult).sort((left, right) => {
-  const leftTime = skillLatestTimestamp(left), rightTime = skillLatestTimestamp(right);
-  // 缺少有效时间的记录始终放到末尾；同一时间按 ID 保持稳定顺序。
-  if (leftTime === null && rightTime !== null) return 1;
-  if (rightTime === null && leftTime !== null) return -1;
-  const difference = leftTime !== null && rightTime !== null ? leftTime - rightTime : 0;
-  return -difference || left.skill_id.localeCompare(right.skill_id);
-}));
-const skillResults = ref<SkillEvalSkillResult[]>([]), skillResultsLoading = ref(false), skillResultsError = ref('');
+const displayedSkillResults = computed(() => scopedSkillResults.value
+    .filter(shouldDisplaySkillResult)
+    .map(skill => ({ skill, timestamp: skillLatestTimestamp(skill) ?? -Infinity }))
+    .sort((left, right) => right.timestamp - left.timestamp || left.skill.skill_id.localeCompare(right.skill.skill_id))
+    .map(item => item.skill));
+const skillResults = shallowRef<SkillEvalSkillResult[]>([]), skillResultsLoading = ref(false), skillResultsError = ref('');
 const skillReportsLoading = ref(false);
 const skillFilter = reactive({ keyword: '' });
 const skillPage = ref(1), skillPageSize = ref(10), skillTotal = ref(0), skillJumpPage = ref(1);
@@ -1418,17 +1415,24 @@ function applySkillResultPage() {
   skillResults.value = items.slice(start, start + skillPageSize.value);
 }
 async function collectScopedSkillResults(scope: ReturnType<typeof skillScopeParams>, keyword: string | undefined, signal: AbortSignal): Promise<SkillEvalSkillResult[]> {
-  const byId = new Map<string, SkillEvalSkillResult>();
-  for (let page = 1; ; page++) {
-    const res = await kcService.getSkillEvalResults({ ...scope, keyword, page, page_size: 100, include_reports: false }, signal);
-    for (const skill of res.items || []) byId.set(skill.skill_id, skill);
-    if (!res.items?.length || page * 100 >= res.total) break;
+  const pageSize = 100, concurrency = 3;
+  const fetchPage = (page: number) => kcService.getSkillEvalResults({ ...scope, keyword, page, page_size: pageSize, include_reports: false }, signal);
+  const first = await fetchPage(1);
+  const byId = new Map((first.items || []).map(skill => [skill.skill_id, skill]));
+  let pages = Math.ceil(first.total / pageSize);
+  for (let start = 2; start <= pages; start += concurrency) {
+    const count = Math.min(concurrency, pages - start + 1);
+    const results = await Promise.all(Array.from({ length: count }, (_, index) => fetchPage(start + index)));
+    for (const result of results) {
+      for (const skill of result.items || []) byId.set(skill.skill_id, skill);
+      pages = Math.max(pages, Math.ceil(result.total / pageSize));
+    }
   }
   return [...byId.values()];
 }
 const skillDrawerVisible = ref(false), skillDrawerPanel = ref<HTMLElement | null>(null);
 const skillDrawerBody = ref<HTMLElement | null>(null);
-const activeSkill = ref<SkillEvalSkillResult | null>(null), activeSkillMode = ref('STATIC');
+const activeSkill = shallowRef<SkillEvalSkillResult | null>(null), activeSkillMode = ref('STATIC');
 const selectedSkillReportVersions = ref<Record<string, string>>({});
 let skillDrawerTrigger: HTMLElement | null = null;
 const skillSubmission = ref<SkillEvalCreateResult | null>(null);
@@ -1513,26 +1517,41 @@ function hydrateVisibleSkillReports(): Promise<void> {
   const context = skillContext, revision = skillReportRevision, scope = skillScopeParams(), signal = skillAbort.signal;
   skillReportsLoading.value = true;
   stopPollingSkillResults();
+  const isCurrent = () => context === skillContext && revision === skillReportRevision && !skillDisposed && !signal.aborted && evalTab.value === 'skill';
   skillReportRequest = (async () => {
-    while (context === skillContext && revision === skillReportRevision && !skillDisposed && !signal.aborted) {
-      const wanted = new Set([...skillResults.value.map(skill => skill.skill_id), ...Object.keys(pendingSkillObservations), ...(activeSkill.value ? [activeSkill.value.skill_id] : [])]);
+    while (isCurrent()) {
+      const visible = new Set([...(activeSkill.value ? [activeSkill.value.skill_id] : []), ...skillResults.value.map(skill => skill.skill_id)]);
       const candidates = new Map([...observedSkillResults.value, ...scopedSkillResults.value].map(skill => [skill.skill_id, skill]));
-      const ids = [...candidates.values()].filter(skill => wanted.has(skill.skill_id) && SKILL_MODE_KEYS.some(mode => skillModeResult(skill, mode)?.report_status === 'unloaded')).map(skill => skill.skill_id).slice(0, 100);
-      if (!ids.length) break;
-      const res = await kcService.getSkillEvalResults({ ...scope, skill_ids: ids, page: 1, page_size: 100, include_reports: true }, signal);
-      if (context !== skillContext || revision !== skillReportRevision || skillDisposed || signal.aborted) return;
-      const requested = new Set(ids), loaded = new Map((res.items || []).map(skill => [skill.skill_id, skill]));
-      const merge = (items: SkillEvalSkillResult[]) => items.flatMap(skill => requested.has(skill.skill_id) ? (loaded.has(skill.skill_id) ? [loaded.get(skill.skill_id)!] : []) : [skill]);
-      scopedSkillResults.value = merge(scopedSkillResults.value);
-      observedSkillResults.value = merge(observedSkillResults.value).filter(skill => pendingSkillObservations[skill.skill_id]);
-      loaded.forEach((_, id) => skillReportLoadedAt.set(id, Date.now()));
-      observeSkillResults(res.items || []);
-      applySkillResultPage();
-      updateActiveSkillResult();
-      // 报告读取失败使某行被过滤时，继续补齐当前页新进入的行。
+      const needsReport = (id: string) => {
+        const skill = candidates.get(id);
+        return skill && SKILL_MODE_KEYS.some(mode => skillModeResult(skill, mode)?.report_status === 'unloaded');
+      };
+      const visibleIds = [...visible].filter(needsReport);
+      const batchSize = 3;
+      // 每批返回就更新当前页。等待确认的新任务在可见报告之后批量跟踪。
+      const batches = (visibleIds.length
+          ? [visibleIds.slice(0, batchSize), visibleIds.slice(batchSize, batchSize * 2)]
+          : [Object.keys(pendingSkillObservations).filter(needsReport).slice(0, 100)])
+          .filter(ids => ids.length);
+      if (!batches.length) break;
+      const results = await Promise.allSettled(batches.map(async ids => {
+        const res = await kcService.getSkillEvalResults({ ...scope, skill_ids: ids, page: 1, page_size: 100, include_reports: true }, signal);
+        if (!isCurrent()) return;
+        const requested = new Set(ids), loaded = new Map((res.items || []).map(skill => [skill.skill_id, skill]));
+        const merge = (items: SkillEvalSkillResult[]) => items.flatMap(skill => requested.has(skill.skill_id) ? (loaded.has(skill.skill_id) ? [loaded.get(skill.skill_id)!] : []) : [skill]);
+        scopedSkillResults.value = merge(scopedSkillResults.value);
+        observedSkillResults.value = merge(observedSkillResults.value).filter(skill => pendingSkillObservations[skill.skill_id]);
+        loaded.forEach((_, id) => skillReportLoadedAt.set(id, Date.now()));
+        observeSkillResults(res.items || []);
+        applySkillResultPage();
+        updateActiveSkillResult();
+      }));
+      for (const result of results) {
+        if (result.status === 'rejected') throw result.reason;
+      }
     }
   })().catch(error => {
-    if (context === skillContext && revision === skillReportRevision && !skillDisposed && !signal.aborted) skillResultsError.value = `当前页报告加载失败，已保留列表：${skillErrorText(error)}`;
+    if (isCurrent()) skillResultsError.value = `当前页报告加载失败，已保留列表：${skillErrorText(error)}`;
   }).finally(() => {
     skillReportRequest = null;
     if (context === skillContext) skillReportsLoading.value = false;
@@ -1562,6 +1581,7 @@ function loadSkillResults(quiet = false): Promise<void> {
       observeSkillResults(all);
       applySkillResultPage();
       updateActiveSkillResult();
+      skillResultsLoading.value = false;
       void hydrateVisibleSkillReports();
       const missing = new Set(Object.keys(pendingSkillObservations).filter(id => !all.some(skill => skill.skill_id === id)));
       if (missing.size) {
