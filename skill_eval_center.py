@@ -217,10 +217,12 @@ class ServerUrlProvider:
 class ExpiringReadCache:
     """有限大小的进程内只读缓存；同键并发合并，失效后不回填旧请求。"""
 
-    def __init__(self, max_entries=256, max_bytes=32 * 1024 * 1024, clock=time.monotonic):
+    def __init__(self, max_entries=256, max_bytes=32 * 1024 * 1024, clock=time.monotonic,
+                 copy_value=copy.deepcopy):
         self.max_entries = max(1, int(max_entries))
         self.max_bytes = max(1, int(max_bytes))
         self.clock = clock
+        self._copy_value = copy_value
         self._lock = threading.Lock()
         self._entries = OrderedDict()
         self._inflight = {}
@@ -233,6 +235,14 @@ class ExpiringReadCache:
             self._entries.clear()
             self._bytes = 0
 
+    def get_cached(self, key):
+        with self._lock:
+            entry = self._entries.get(key)
+            if not entry or entry[0] <= self.clock() or entry[2] is not None:
+                return None
+            self._entries.move_to_end(key)
+        return self._copy_value(entry[1])
+
     def get(self, key, loader, ttl, empty_ttl=None, error_ttl=0):
         while True:
             with self._lock:
@@ -241,7 +251,7 @@ class ExpiringReadCache:
                     self._entries.move_to_end(key)
                     if entry[2] is not None:
                         raise entry[2]
-                    return copy.deepcopy(entry[1])
+                    return self._copy_value(entry[1])
                 if entry:
                     self._bytes -= self._entries.pop(key)[3]
                 event = self._inflight.get(key)
@@ -272,7 +282,7 @@ class ExpiringReadCache:
                 event.set()
         if error is not None:
             raise error
-        return copy.deepcopy(value)
+        return self._copy_value(value)
 
 
 class ThreadLocalHttpTransport:
@@ -295,6 +305,8 @@ class ThreadLocalHttpTransport:
 
 
 class SkillEvaluationHttpClient:
+    _MAX_FILTERED_SKILL_NAMES = 4
+
     def __init__(self, http: HttpTransport, server_url, modes: ModeRegistry,
                  timeout, logger, task_cache_ttl=10, report_cache_ttl=300,
                  empty_report_ttl=3, page_workers=4, report_concurrency=8,
@@ -309,8 +321,10 @@ class SkillEvaluationHttpClient:
         self.empty_report_ttl = empty_report_ttl
         self.page_workers = max(1, int(page_workers))
         self.task_cache = ExpiringReadCache(max_entries=32)
-        self.task_index_cache = ExpiringReadCache(max_entries=32)
+        # 索引只在内部读取，按所需名称选出任务后再复制。
+        self.task_index_cache = ExpiringReadCache(max_entries=32, copy_value=lambda index: index)
         self._page_executor = ThreadPoolExecutor(max_workers=self.page_workers)
+        self._name_executor = ThreadPoolExecutor(max_workers=self._MAX_FILTERED_SKILL_NAMES)
         self.report_cache = ExpiringReadCache(max_entries=report_cache_max_entries,
                                              max_bytes=report_cache_max_bytes)
         self._report_slots = threading.BoundedSemaphore(max(1, int(report_concurrency)))
@@ -441,39 +455,58 @@ class SkillEvaluationHttpClient:
         return self.report_cache.get(key, fetch, ttl=self.report_cache_ttl,
                                      empty_ttl=self.empty_report_ttl, error_ttl=2)
 
-    def fetch_latest_tasks(self, skill_names):
-        """缓存每个名称/模式的最新记录，后续目录页不再复制、扫描全部任务历史。"""
-        names = set(skill_names)
-        name_filter = next(iter(names)) if len(names) == 1 else None
-
+    def _task_index(self, name_filter):
         def build_index():
-            latest, invalid_names = {}, set()
+            latest, orders, invalid_names = {}, {}, set()
             for task in self._collect_tasks(100, {"skill_name": name_filter}):
+                name = task.get("skill_name")
+                if not name or (name_filter is not None and name != name_filter):
+                    continue
                 task_modes = set(task.get("eval_modes") or ())
                 task_modes.update((task.get("mode_states") or {}).keys())
                 task_modes.intersection_update(RESULT_MODES)
-                name = task.get("skill_name")
-                if not name or not task_modes:
+                if not task_modes:
                     continue
                 order = _task_order(task)
                 if order[0] == float("-inf"):
                     invalid_names.add(name)
+                    continue
                 modes = latest.setdefault(name, {})
                 for mode in task_modes:
-                    if mode not in modes or order > _task_order(modes[mode]):
+                    key = (name, mode)
+                    if key not in orders or order > orders[key]:
+                        orders[key] = order
                         modes[mode] = task
             return {"latest": latest, "invalid_names": list(invalid_names)}
 
-        index = self.task_index_cache.get(
+        return self.task_index_cache.get(
             (self.server_url(), name_filter, "all"), build_index,
             ttl=self.task_cache_ttl, error_ttl=1)
-        if names.intersection(index["invalid_names"]):
-            raise RuntimeError("匹配的评测任务缺少有效 updated_at/created_at，无法判断最新记录")
+
+    def fetch_latest_tasks(self, skill_names):
+        """复用全量索引，冷缓存下只为少量指定名称并行查询外部任务。"""
+        names = set(skill_names)
+        if not names:
+            return []
+        if len(names) > self._MAX_FILTERED_SKILL_NAMES:
+            indexes = [self._task_index(None)]
+        else:
+            global_index = self.task_index_cache.get_cached((self.server_url(), None, "all"))
+            if global_index is not None:
+                indexes = [global_index]
+            elif len(names) == 1:
+                indexes = [self._task_index(next(iter(names)))]
+            else:
+                # 名称查询可能继续分页，分页使用独立线程池。
+                indexes = self._name_executor.map(self._task_index, names)
         tasks = {}
-        for name in names:
-            for task in index["latest"].get(name, {}).values():
-                tasks[str(task["task_id"])] = task
-        return list(tasks.values())
+        for index in indexes:
+            if names.intersection(index["invalid_names"]):
+                raise RuntimeError("匹配的评测任务缺少有效 updated_at/created_at，无法判断最新记录")
+            for name in names:
+                for task in index["latest"].get(name, {}).values():
+                    tasks[str(task["task_id"])] = task
+        return copy.deepcopy(list(tasks.values()))
 
 
 class HarnessHttpClient:
