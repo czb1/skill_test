@@ -193,9 +193,9 @@
           <div v-if="skillResultsError" class="skill-state skill-state--error" role="alert">{{ skillResultsError }} <button class="skill-text-button" :disabled="skillResultsLoading" @click="loadSkillResults()">重试</button></div>
           <p v-if="skillResultsLoading && !skillResults.length" class="empty-text" role="status">正在加载 Skill…</p>
           <div v-if="skillResults.length" class="table-wrap" :aria-busy="skillResultsLoading">
-            <table class="asset-table eval-table skill-results-table" v-col-resize data-col-resize-key="kg-skill-results-v4">
-              <colgroup><col style="width:24%" /><col v-for="key in SKILL_MODE_KEYS" :key="key" style="width:22%" /><col style="width:10%" /></colgroup>
-              <thead class="asset-table-head"><tr><th>Skill</th><th v-for="key in SKILL_MODE_KEYS" :key="key">{{ skillModeLabel(key) }}</th><th>操作</th></tr></thead>
+            <table class="asset-table eval-table skill-results-table" v-col-resize data-col-resize-key="kg-skill-results-v5">
+              <colgroup><col style="width:28%" /><col v-for="key in SKILL_MODE_KEYS" :key="key" style="width:24%" /></colgroup>
+              <thead class="asset-table-head"><tr><th>Skill</th><th v-for="key in SKILL_MODE_KEYS" :key="key">{{ skillModeLabel(key) }}</th></tr></thead>
               <tbody><tr v-for="skill in skillResults" :key="skill.skill_id" class="hierarchy-row hierarchy-row-product clickable-row" :class="{ 'row-active': activeSkill?.skill_id === skill.skill_id }" @click="openSkillDrawer(skill)">
                 <td><button class="skill-name-link" @click.stop="openSkillDrawer(skill)">{{ skill.skill_name || skill.name || '未命名 Skill' }}</button><p v-if="hasSkillMatchError(skill)" class="skill-match-error">{{ skill.match_error || '评测记录关联异常' }}</p></td>
                 <td v-for="key in SKILL_MODE_KEYS" :key="key"><button type="button" class="skill-mode-cell" @click.stop="openSkillDrawer(skill, key)">
@@ -207,7 +207,6 @@
                   </span>
                   <span v-for="entry in skillModeGlance(skill, key)" :key="entry.key" class="skill-cell-metric">{{ entry.label }} <b>{{ entry.value }}</b><small v-if="entry.detail">（{{ entry.detail }}）</small></span>
                 </button></td>
-                <td><div class="skill-row-actions"><button type="button" class="skill-text-button" :disabled="skill.skill_status !== '已完成' || skillSubmitting || hasSkillMatchError(skill)" @click.stop="openSkillEvaluationFor(skill)">发起评测</button></div></td>
               </tr></tbody>
             </table>
           </div>
@@ -882,7 +881,6 @@
         <div class="eval-modal-head">
           <div class="eval-modal-heading">
             <h3>{{ evalForm.taskType === 'skill' ? '发起 Skill 评测' : '新建评测任务' }}</h3>
-            <p v-if="skillEvaluationTarget" class="skill-modal-target">{{ skillEvaluationTarget.skill_name || skillEvaluationTarget.name || '未命名 Skill' }}</p>
           </div>
           <button type="button" class="eval-modal-close" aria-label="关闭" @click="closeEvalModal">&times;</button>
         </div>
@@ -985,7 +983,7 @@
               </div>
             </fieldset>
 
-            <div v-if="!skillEvaluationTarget">
+            <div>
               <div class="skill-modal-picker-heading">
                 <span class="skill-modal-field-label">选择 Skill</span>
                 <span class="skill-selected-count">已选 {{ skillForm.selected.size }} 个</span>
@@ -1324,7 +1322,6 @@ function skillModeGlance(skill: SkillEvalSkillResult, mode: string): SkillReport
 }
 
 const skillForm = reactive({ modes: new Set<string>(['STATIC']), selected: new Set<string>(), keyword: '' });
-const skillEvaluationTarget = ref<SkillEvalSkillResult | null>(null);
 const evaluableSkills = ref<SkillEvalSkillItem[]>([]);
 const skillListLoading = ref(false), skillListError = ref('');
 const skillListPage = ref(1), skillListPageSize = ref(10), skillListTotal = ref(0);
@@ -1649,7 +1646,7 @@ const activeSkillResult = computed(() => {
 async function submitSkillEvaluation() {
   if (skillSubmitting.value || selectingAllSkills.value || !skillScopeValid()) return;
   if (!skillForm.modes.size) { skillSubmitError.value = '请至少选择一种评测模式。'; return; }
-  const ids = skillEvaluationTarget.value ? [skillEvaluationTarget.value.skill_id] : [...skillForm.selected];
+  const ids = [...skillForm.selected];
   if (!ids.length) { skillSubmitError.value = '请至少选择一个 Skill。'; return; }
   const context = skillContext, scope = skillScopeParams(), modes = [...skillForm.modes];
   const creator = props.currentUserId || undefined;
@@ -1672,7 +1669,7 @@ async function submitSkillEvaluation() {
       if (!previous) return; // 没有可信快照时不推断新一轮评测状态。
       (pendingSkillObservations[skill.skill_id] ||= {})[mode] = { before: skillSourceIdentity(skillModeResult(previous, mode)), seen: false, expires: Date.now() + 5 * 60 * 1000 };
     }));
-    evalModalVisible.value = false; skillEvaluationTarget.value = null; pickerSession++; pickerRequest++; evalTab.value = 'skill';
+    evalModalVisible.value = false; pickerSession++; pickerRequest++; evalTab.value = 'skill';
     skillRefreshAgain = true;
   } catch (error) {
     if (context !== skillContext || skillDisposed) return;
@@ -2146,26 +2143,18 @@ const evalTaskNameError = computed<string>(() => {
   return name && evalRows.value.some(row => row.task_name === name) ? '该任务名称已存在，请重新输入' : '';
 });
 function openEvalModal() {
-  prepareEvalModal(null);
-}
-function prepareEvalModal(target: SkillEvalSkillResult | null) {
   if (skillSubmitting.value) return;
   pickerSession++; pickerRequest++; selectingAllSkills.value = false;
-  skillEvaluationTarget.value = target;
   evalForm.taskName = ''; evalForm.taskType = evalTab.value === 'skill' ? 'skill' : '';
   evalForm.taskSource = ''; evalForm.modes = new Set<string>(['baseline', 'full']); evalForm.hasReflow = false;
-  skillForm.modes = new Set<string>(['STATIC']); skillForm.selected = new Set<string>(target ? [target.skill_id] : []); skillForm.keyword = '';
+  skillForm.modes = new Set<string>(['STATIC']); skillForm.selected = new Set<string>(); skillForm.keyword = '';
   skillListPage.value = 1; evaluableSkills.value = []; skillListTotal.value = 0; skillListLoading.value = false; skillListError.value = ''; skillSubmitError.value = '';
   evalModalVisible.value = true;
-  if (evalTab.value === 'skill') { void loadSkillModes(); if (!target) void loadEvaluableSkills(); }
-}
-function openSkillEvaluationFor(skill: SkillEvalSkillResult) {
-  if (skillSubmitting.value || skill.skill_status !== '已完成' || hasSkillMatchError(skill)) return;
-  evalTab.value = 'skill'; prepareEvalModal(skill);
+  if (evalTab.value === 'skill') { void loadSkillModes(); void loadEvaluableSkills(); }
 }
 function closeEvalModal() {
   if (skillSubmitting.value) return;
-  evalModalVisible.value = false; skillEvaluationTarget.value = null; pickerSession++; pickerRequest++; selectingAllSkills.value = false;
+  evalModalVisible.value = false; pickerSession++; pickerRequest++; selectingAllSkills.value = false;
 }
 function isModeChecked(key: string) {
   return evalForm.modes.has(key);
@@ -2548,7 +2537,7 @@ onBeforeUnmount(() => {
 watch(() => props.scope, () => {
   skillContext++; skillReportRevision++; skillAbort.abort(); skillAbort = new AbortController(); stopPollingSkillResults();
   pickerSession++; pickerRequest++; selectingAllSkills.value = false; skillListLoading.value = false;
-  evalModalVisible.value = false; skillEvaluationTarget.value = null; skillForm.selected.clear(); evaluableSkills.value = []; skillListTotal.value = 0;
+  evalModalVisible.value = false; skillForm.selected.clear(); evaluableSkills.value = []; skillListTotal.value = 0;
   closeSkillDrawer(); scopedSkillResults.value = []; skillResults.value = []; skillTotal.value = 0; skillResultsError.value = ''; skillResultsLoading.value = false; skillReportsLoading.value = false;
   observedSkillResults.value = []; skillReportLoadedAt.clear();
   skillSubmission.value = null; skillObservationNotice.value = ''; Object.keys(pendingSkillObservations).forEach(id => delete pendingSkillObservations[id]);
@@ -3879,7 +3868,6 @@ tbody tr:hover td { background: #f8f9fd; }
 .eval-modal--skill .eval-modal-head { align-items: flex-start; gap: 16px; }
 .eval-modal--skill .eval-modal-close { flex-shrink: 0; }
 .eval-modal-heading { min-width: 0; }
-.skill-modal-target { margin: 4px 0 0; color: #5b687d; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .eval-modal--skill .eval-modal-body { padding: 18px 24px; }
 .skill-modal-fieldset, .skill-modal-mode-field { min-width: 0; margin: 0; padding: 0; border: 0; }
 .skill-modal-fieldset { display: grid; gap: 18px; }
@@ -4153,10 +4141,9 @@ details > summary.skill-report-row-head:hover, details[open] > summary.skill-rep
   .eval-summary-cards { grid-template-columns: 1fr; }
 }
 /* 按 Skill 展示的列表及结果状态 */
-.skill-results-table { min-width: 1180px; table-layout: fixed; }
+.skill-results-table { min-width: 1080px; table-layout: fixed; }
 .skill-results-table td { vertical-align: top; white-space: normal; padding: 8px 14px; }
-.skill-results-table td:first-child,
-.skill-results-table td:last-child { vertical-align: middle; }
+.skill-results-table td:first-child { vertical-align: middle; }
 .skill-name-link { border: 0; background: none; padding: 0; text-align: left; color: #3f5fc3; font-size: 14px; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
 .skill-mode-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: 1.4; text-align: left; cursor: pointer; }
 .skill-mode-meta { display: flex; flex: 0 0 100%; min-width: 0; flex-wrap: wrap; align-items: center; gap: 3px 8px; overflow-wrap: anywhere; }
@@ -4164,7 +4151,6 @@ details > summary.skill-report-row-head:hover, details[open] > summary.skill-rep
 .skill-list-hint { color: #7a8798; font-size: 12px; margin-left: auto; }
 .skill-cell-metric { color: #68768c; font-size: 12px; }
 .skill-cell-metric b, .skill-cell-metric small { display: inline-block; white-space: nowrap; }
-.skill-row-actions { display: flex; flex-direction: column; gap: 14px; align-items: flex-start; font-size: 13px; }
 .skill-match-error, .has-error { color: #c74242; }
 .skill-match-error { font-size: 12px; line-height: 1.6; margin: 4px 0 0; }
 .skill-observation-note { display: block; font-size: 12px; color: #9a6a1a; line-height: 1.6; }
