@@ -4155,6 +4155,8 @@ details > summary.skill-report-row-head:hover, details[open] > summary.skill-rep
 /* 按 Skill 展示的列表及结果状态 */
 .skill-results-table { min-width: 1180px; table-layout: fixed; }
 .skill-results-table td { vertical-align: top; white-space: normal; padding: 8px 14px; }
+.skill-results-table td:first-child,
+.skill-results-table td:last-child { vertical-align: middle; }
 .skill-name-link { border: 0; background: none; padding: 0; text-align: left; color: #3f5fc3; font-size: 14px; font-weight: 600; cursor: pointer; overflow-wrap: anywhere; }
 .skill-mode-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; line-height: 1.4; text-align: left; cursor: pointer; }
 .skill-mode-meta { display: flex; flex: 0 0 100%; min-width: 0; flex-wrap: wrap; align-items: center; gap: 3px 8px; overflow-wrap: anywhere; }
