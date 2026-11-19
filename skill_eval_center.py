@@ -327,16 +327,16 @@ class ThreadLocalHttpTransport:
         self.session_factory = session_factory
         self._local = threading.local()
 
-    def _session(self):
-        if not hasattr(self._local, "session"):
-            self._local.session = self.session_factory()
-        return self._local.session
-
     def get(self, url, **kwargs):
         return self._session().get(url, **kwargs)
 
     def post(self, url, **kwargs):
         return self._session().post(url, **kwargs)
+
+    def _session(self):
+        if not hasattr(self._local, "session"):
+            self._local.session = self.session_factory()
+        return self._local.session
 
 
 class SkillEvaluationHttpClient:
@@ -391,6 +391,63 @@ class SkillEvaluationHttpClient:
         resp.raise_for_status()
         result = resp.json() if resp.text else {}
         return result
+
+    def fetch_all_tasks(self, page_size=100, skill_name=None, eval_mode=None):
+        """始终查询 all 来源；名称/模式可缩小范围，名称仍须由业务层精确校验。
+
+        不按全局 state 或 creator 过滤，避免丢失某一模式的最新任务。
+        """
+        page_size = min(max(int(page_size), 1), 100)
+        filters = {"skill_name": skill_name, "eval_mode": eval_mode}
+        key = (self.server_url(), page_size, skill_name, eval_mode, "all")
+        return self.task_cache.get(
+            key, lambda: self._collect_tasks(page_size, filters),
+            ttl=self.task_cache_ttl, error_ttl=1)
+
+    def fetch_report(self, mode, external_task_id, updated_at=None):
+        key = (self.server_url(), mode, external_task_id, str(updated_at or ""))
+
+        def fetch():
+            strategy = self.modes.get(mode)
+            with self._report_slots:
+                resp = self.http.get(self.server_url() + strategy.report_path(external_task_id),
+                                     verify=False, timeout=self.timeout())
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            data = resp.json() if resp.text else {}
+            if not isinstance(data, dict):
+                raise RuntimeError("评测报告格式错误")
+            report = strategy.extract_report(data)
+            return report if report else None
+
+        return self.report_cache.get(key, fetch, ttl=self.report_cache_ttl,
+                                     empty_ttl=self.empty_report_ttl, error_ttl=2)
+
+    def fetch_latest_tasks(self, skill_names):
+        """复用全量索引，冷缓存下只为少量指定名称并行查询外部任务。"""
+        names = set(skill_names)
+        if not names:
+            return []
+        if len(names) > self._MAX_FILTERED_SKILL_NAMES:
+            indexes = [self._task_index(None)]
+        else:
+            global_index = self.task_index_cache.get_cached((self.server_url(), None, "all"))
+            if global_index is not None:
+                indexes = [global_index]
+            elif len(names) == 1:
+                indexes = [self._task_index(next(iter(names)))]
+            else:
+                # 名称查询可能继续分页，分页使用独立线程池。
+                indexes = self._name_executor.map(self._task_index, names)
+        tasks = {}
+        for index in indexes:
+            if names.intersection(index["invalid_names"]):
+                raise RuntimeError("匹配的评测任务缺少有效 updated_at/created_at，无法判断最新记录")
+            for name in names:
+                for task in index["latest"].get(name, {}).values():
+                    tasks[str(task["task_id"])] = task
+        return copy.deepcopy(list(tasks.values()))
 
     def _fetch_task_page(self, page, page_size, filters):
         params = {"page": page, "page_size": page_size, "platform_type": "all"}
@@ -458,38 +515,6 @@ class SkillEvaluationHttpClient:
                 raise RuntimeError("评测服务返回重复分页，任务列表不完整，请刷新重试")
         raise RuntimeError("评测服务任务分页超过上限，未返回不完整结果")
 
-    def fetch_all_tasks(self, page_size=100, skill_name=None, eval_mode=None):
-        """始终查询 all 来源；名称/模式可缩小范围，名称仍须由业务层精确校验。
-
-        不按全局 state 或 creator 过滤，避免丢失某一模式的最新任务。
-        """
-        page_size = min(max(int(page_size), 1), 100)
-        filters = {"skill_name": skill_name, "eval_mode": eval_mode}
-        key = (self.server_url(), page_size, skill_name, eval_mode, "all")
-        return self.task_cache.get(
-            key, lambda: self._collect_tasks(page_size, filters),
-            ttl=self.task_cache_ttl, error_ttl=1)
-
-    def fetch_report(self, mode, external_task_id, updated_at=None):
-        key = (self.server_url(), mode, external_task_id, str(updated_at or ""))
-
-        def fetch():
-            strategy = self.modes.get(mode)
-            with self._report_slots:
-                resp = self.http.get(self.server_url() + strategy.report_path(external_task_id),
-                                     verify=False, timeout=self.timeout())
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            data = resp.json() if resp.text else {}
-            if not isinstance(data, dict):
-                raise RuntimeError("评测报告格式错误")
-            report = strategy.extract_report(data)
-            return report if report else None
-
-        return self.report_cache.get(key, fetch, ttl=self.report_cache_ttl,
-                                     empty_ttl=self.empty_report_ttl, error_ttl=2)
-
     def _task_index(self, name_filter):
         def build_index():
             latest, orders, invalid_names = {}, {}, set()
@@ -515,31 +540,6 @@ class SkillEvaluationHttpClient:
         return self.task_index_cache.get(
             (self.server_url(), name_filter, "all"), build_index,
             ttl=self.task_cache_ttl, error_ttl=1)
-
-    def fetch_latest_tasks(self, skill_names):
-        """复用全量索引，冷缓存下只为少量指定名称并行查询外部任务。"""
-        names = set(skill_names)
-        if not names:
-            return []
-        if len(names) > self._MAX_FILTERED_SKILL_NAMES:
-            indexes = [self._task_index(None)]
-        else:
-            global_index = self.task_index_cache.get_cached((self.server_url(), None, "all"))
-            if global_index is not None:
-                indexes = [global_index]
-            elif len(names) == 1:
-                indexes = [self._task_index(next(iter(names)))]
-            else:
-                # 名称查询可能继续分页，分页使用独立线程池。
-                indexes = self._name_executor.map(self._task_index, names)
-        tasks = {}
-        for index in indexes:
-            if names.intersection(index["invalid_names"]):
-                raise RuntimeError("匹配的评测任务缺少有效 updated_at/created_at，无法判断最新记录")
-            for name in names:
-                for task in index["latest"].get(name, {}).values():
-                    tasks[str(task["task_id"])] = task
-        return copy.deepcopy(list(tasks.values()))
 
 
 class HarnessHttpClient:
@@ -603,8 +603,23 @@ class HarnessPackageResolver:
         self.harness = harness
         self.logger = logger
 
-    def _find_package(self, skill_name, scenes, product_name):
-        """在给定场景列表中查找 Skill 的最新可用包，返回 (package_url, version) 或 None。"""
+    def resolve(self, skill_info, offering_ids):
+        """优先使用库内包信息，缺失时查询 harness 并回填。"""
+        package_url = skill_info.get("skill_package_url")
+        version = skill_info.get("version")
+        if package_url and version:
+            return package_url, version
+
+        package_url, version = self._resolve_harness_package(skill_info, offering_ids)
+        skill_id = skill_info.get("skill_id")
+        try:
+            self.catalog.update_skill_package_info(skill_id, package_url, version)
+        except Exception as error:
+            self.logger.warning(f"回填 Skill 包信息失败: {skill_id}, {error}")
+        return package_url, version
+
+    def _find_package(self, skill_name, scenes, product_name) -> Tuple[str, str]:
+        """返回最新可用包的下载地址和版本，未找到时两项均为空字符串。"""
         for scene in scenes:
             first_scene = scene.get("firstScene")
             second_scene = scene.get("secondScene")
@@ -623,22 +638,7 @@ class HarnessPackageResolver:
             version = latest.get("version")
             if package_url and version:
                 return package_url, version
-        return None
-
-    def resolve(self, skill_info, offering_ids):
-        """优先使用库内包信息，缺失时查询 harness 并回填。"""
-        package_url = skill_info.get("skill_package_url")
-        version = skill_info.get("version")
-        if package_url and version:
-            return package_url, version
-
-        package_url, version = self._resolve_harness_package(skill_info, offering_ids)
-        skill_id = skill_info.get("skill_id")
-        try:
-            self.catalog.update_skill_package_info(skill_id, package_url, version)
-        except Exception as error:
-            self.logger.warning(f"回填 Skill 包信息失败: {skill_id}, {error}")
-        return package_url, version
+        return "", ""
 
     def _resolve_harness_package(self, skill_info, offering_ids):
         skill_name = skill_info.get("name")
@@ -655,7 +655,7 @@ class HarnessPackageResolver:
         for offering_id, product_name in products:
             package = self._find_product_package(
                 skill_name, offering_id, product_name, preferred_scenes)
-            if package:
+            if all(package):
                 return package
 
         product_names = ", ".join(name for _, name in products)
@@ -676,16 +676,20 @@ class HarnessPackageResolver:
                 products.append(pair)
         return products
 
-    def _find_product_package(self, skill_name, offering_id, product_name, preferred_scenes):
+    def _find_product_package(self, skill_name, offering_id, product_name,
+                              preferred_scenes) -> Tuple[str, str]:
         package = self._find_package(skill_name, preferred_scenes, product_name)
-        if package:
+        if all(package):
             return package
         try:
-            other_scenes = [scene for scene in self.harness.fetch_scenes(offering_id)
-                            if scene not in preferred_scenes]
+            other_scenes = [
+                scene
+                for scene in self.harness.fetch_scenes(offering_id)
+                if scene not in preferred_scenes
+            ]
         except Exception as error:
             self.logger.warning(f"查询 harness 场景列表失败: offering_id={offering_id}, {error}")
-            return None
+            return package
         return self._find_package(skill_name, other_scenes, product_name)
 
 
@@ -760,41 +764,6 @@ class SkillEvaluationService:
         self.max_workers = max(1, int(max_workers))
         self._report_executor = ThreadPoolExecutor(max_workers=self.max_workers)
 
-    def _validate_scope(self, offering_id=None, pdu=None, department=None):
-        if sum(bool(value) for value in (offering_id, pdu, department)) != 1:
-            raise ValueError("pdu、department、offering_id必须且只能传一个")
-        offering_ids = self.catalog.query_scope_offering_ids(offering_id, pdu, department)
-        if not offering_ids:
-            raise ValueError("指定范围内没有产品")
-        return offering_ids
-
-    def _validate_selected_skills(self, skill_ids, offering_ids):
-        if not skill_ids:
-            raise ValueError("skill_ids 不能为空")
-        ordered_ids = list(dict.fromkeys(skill_ids))
-        infos = self.catalog.query_skill_infos_by_ids(ordered_ids)
-        scope_map = self.catalog.query_skill_scope_products(ordered_ids, offering_ids)
-        invalid = []
-        for skill_id in ordered_ids:
-            info = infos.get(skill_id)
-            if not info:
-                invalid.append(f"{skill_id}(不存在)")
-            elif not scope_map.get(skill_id):
-                invalid.append(f"{skill_id}(不属于当前范围)")
-            elif info.get("status") != "已完成":
-                invalid.append(f"{skill_id}(状态非已完成)")
-            elif not _skill_name(info):
-                invalid.append(f"{skill_id}(缺少 Skill 名称)")
-        if invalid:
-            raise ValueError("以下 Skill 不可评测: " + ", ".join(invalid))
-        owners = self.catalog.query_skill_eval_name_owners(
-            [_skill_name(infos[skill_id]) for skill_id in ordered_ids])
-        ambiguous = [name for name, ids in owners.items() if len(set(ids)) > 1]
-        if ambiguous:
-            raise ValueError("外部任务仅含 skill_name，以下名称对应多个 Skill，无法可靠关联: "
-                             + ", ".join(sorted(ambiguous)))
-        return {skill_id: infos[skill_id] for skill_id in ordered_ids}, scope_map
-
     def get_evaluable_skills(self, offering_id=None, pdu=None, department=None,
                              keyword=None, page=1, page_size=10):
         offering_ids = self._validate_scope(offering_id, pdu, department)
@@ -803,33 +772,6 @@ class SkillEvaluationService:
 
     def get_skill_eval_modes(self):
         return self.modes.describe()
-
-    def _mode_result(self, task, mode):
-        value = _empty_mode()
-        value.update({
-            "status": self.states.resolve(task, mode),
-            "external_task_id": task["task_id"],
-            "version": task.get("version"),
-            "created_at": task.get("created_at"),
-            "updated_at": task.get("updated_at"),
-        })
-        context = task.get("state_context") or {}
-        if isinstance(context, dict):
-            error = context.get(mode) or context.get("error")
-        else:
-            error = context
-        mode_state = (task.get("mode_states") or {}).get(mode) or {}
-        value["error"] = mode_state.get("error") or error or None
-        return value
-
-    def _load_report(self, pair):
-        mode, task_id, updated_at = pair
-        try:
-            report = self.gateway.fetch_report(mode, task_id, updated_at=updated_at)
-            return pair, report, None
-        except Exception as error:
-            self.logger.warning(f"获取 Skill 评测报告失败: mode={mode}, task_id={task_id}, {error}")
-            return pair, None, "获取报告失败，请稍后刷新"
 
     def get_skill_eval_results(self, offering_id=None, pdu=None, department=None,
                                keyword=None, page=1, page_size=10,
@@ -866,6 +808,128 @@ class SkillEvaluationService:
             f"reports_ms={(finished - tasks_done) * 1000:.0f}, "
             f"total_ms={(finished - started) * 1000:.0f}")
         return result
+
+    def create_skill_eval_batch(self, skill_ids, modes, offering_id=None, pdu=None,
+                                department=None, batch_name=None, creator=None,
+                                model=None, agent=None, description=None):
+        """兼容旧入口名称；直接提交，不创建本地批次或任务。
+
+        提交超时不自动重试：服务端可能已接收，避免重复触发。
+        """
+        offering_ids = self._validate_scope(offering_id, pdu, department)
+        modes = self.modes.validate(modes)
+        infos, scope_map = self._validate_selected_skills(skill_ids, offering_ids)
+        prepared = []
+        errors = []
+        # 所有包在提交前统一校验；校验失败时尚未触发任何外部评测。
+        for skill_id, info in infos.items():
+            try:
+                package_url, version = self.packages.resolve(info, scope_map.get(skill_id, []))
+                if not package_url or not version:
+                    raise ValueError("缺少包地址或版本号")
+                prepared.append({"skill_id": skill_id, "skill_name": _skill_name(info),
+                                 "skill_package_url": package_url, "version": version})
+            except Exception as error:
+                errors.append(f"{_skill_name(info) or skill_id}({error})")
+        if errors:
+            raise ValueError("以下 Skill 无法解析评测包: " + ", ".join(errors))
+
+        items = [{"skill_id": skill["skill_id"], "skill_name": skill["skill_name"],
+                  "version": skill["version"], "modes": {}} for skill in prepared]
+        work = [
+            (index, mode, skill)
+            for index, skill in enumerate(prepared)
+            for mode in modes
+        ]
+
+        def submit(entry):
+            index, mode, skill = entry
+            try:
+                response = self.gateway.trigger(
+                    mode, skill, creator or "system", model=model, agent=agent,
+                    description=description)
+                if not isinstance(response, dict) or not response.get("task_id"):
+                    raise RuntimeError("评测服务未返回 task_id，需刷新确认是否已接收")
+                # ID 只用于确认本次响应是否有效，不持久化，也不要求前端保存。
+                return index, mode, {"submission_status": "submitted", "error": None}
+            except Exception as error:
+                self.logger.error(f"提交 Skill 评测未确认: skill_id={skill['skill_id']}, "
+                                  f"mode={mode}, error={error}")
+                return index, mode, {
+                    "submission_status": "unconfirmed",
+                    "error": "未确认提交成功，请先刷新结果，再决定是否重试",
+                }
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            for index, mode, value in executor.map(submit, work):
+                items[index]["modes"][mode] = value
+        submitted = sum(value["submission_status"] == "submitted"
+                        for item in items for value in item["modes"].values())
+        return {"skill_count": len(items), "total_count": len(work),
+                "submitted_count": submitted, "unconfirmed_count": len(work) - submitted,
+                "modes": modes, "items": items}
+
+    def _validate_scope(self, offering_id=None, pdu=None, department=None):
+        if sum(bool(value) for value in (offering_id, pdu, department)) != 1:
+            raise ValueError("pdu、department、offering_id必须且只能传一个")
+        offering_ids = self.catalog.query_scope_offering_ids(offering_id, pdu, department)
+        if not offering_ids:
+            raise ValueError("指定范围内没有产品")
+        return offering_ids
+
+    def _validate_selected_skills(self, skill_ids, offering_ids):
+        if not skill_ids:
+            raise ValueError("skill_ids 不能为空")
+        ordered_ids = list(dict.fromkeys(skill_ids))
+        infos = self.catalog.query_skill_infos_by_ids(ordered_ids)
+        scope_map = self.catalog.query_skill_scope_products(ordered_ids, offering_ids)
+        invalid = []
+        for skill_id in ordered_ids:
+            info = infos.get(skill_id)
+            if not info:
+                invalid.append(f"{skill_id}(不存在)")
+            elif not scope_map.get(skill_id):
+                invalid.append(f"{skill_id}(不属于当前范围)")
+            elif info.get("status") != "已完成":
+                invalid.append(f"{skill_id}(状态非已完成)")
+            elif not _skill_name(info):
+                invalid.append(f"{skill_id}(缺少 Skill 名称)")
+        if invalid:
+            raise ValueError("以下 Skill 不可评测: " + ", ".join(invalid))
+        owners = self.catalog.query_skill_eval_name_owners(
+            [_skill_name(infos[skill_id]) for skill_id in ordered_ids])
+        ambiguous = [name for name, ids in owners.items() if len(set(ids)) > 1]
+        if ambiguous:
+            raise ValueError("外部任务仅含 skill_name，以下名称对应多个 Skill，无法可靠关联: "
+                             + ", ".join(sorted(ambiguous)))
+        return {skill_id: infos[skill_id] for skill_id in ordered_ids}, scope_map
+
+    def _mode_result(self, task, mode):
+        value = _empty_mode()
+        value.update({
+            "status": self.states.resolve(task, mode),
+            "external_task_id": task["task_id"],
+            "version": task.get("version"),
+            "created_at": task.get("created_at"),
+            "updated_at": task.get("updated_at"),
+        })
+        context = task.get("state_context") or {}
+        if isinstance(context, dict):
+            error = context.get(mode) or context.get("error")
+        else:
+            error = context
+        mode_state = (task.get("mode_states") or {}).get(mode) or {}
+        value["error"] = mode_state.get("error") or error or None
+        return value
+
+    def _load_report(self, pair):
+        mode, task_id, updated_at = pair
+        try:
+            report = self.gateway.fetch_report(mode, task_id, updated_at=updated_at)
+            return pair, report, None
+        except Exception as error:
+            self.logger.warning(f"获取 Skill 评测报告失败: mode={mode}, task_id={task_id}, {error}")
+            return pair, None, "获取报告失败，请稍后刷新"
 
     def _query_result_page(self, offering_ids, keyword, page, page_size, skill_ids):
         filters = {
@@ -962,62 +1026,6 @@ class SkillEvaluationService:
             for value in pending_reports[pair]:
                 value.update(report=report, report_error=error, report_status=report_status)
 
-    def create_skill_eval_batch(self, skill_ids, modes, offering_id=None, pdu=None,
-                                department=None, batch_name=None, creator=None,
-                                model=None, agent=None, description=None):
-        """兼容旧入口名称；直接提交，不创建本地批次或任务。
-
-        提交超时不自动重试：服务端可能已接收，避免重复触发。
-        """
-        offering_ids = self._validate_scope(offering_id, pdu, department)
-        modes = self.modes.validate(modes)
-        infos, scope_map = self._validate_selected_skills(skill_ids, offering_ids)
-        prepared = []
-        errors = []
-        # 所有包在提交前统一校验；校验失败时尚未触发任何外部评测。
-        for skill_id, info in infos.items():
-            try:
-                package_url, version = self.packages.resolve(info, scope_map.get(skill_id, []))
-                if not package_url or not version:
-                    raise ValueError("缺少包地址或版本号")
-                prepared.append({"skill_id": skill_id, "skill_name": _skill_name(info),
-                                 "skill_package_url": package_url, "version": version})
-            except Exception as error:
-                errors.append(f"{_skill_name(info) or skill_id}({error})")
-        if errors:
-            raise ValueError("以下 Skill 无法解析评测包: " + ", ".join(errors))
-
-        items = [{"skill_id": skill["skill_id"], "skill_name": skill["skill_name"],
-                  "version": skill["version"], "modes": {}} for skill in prepared]
-        work = [(index, mode, skill) for index, skill in enumerate(prepared) for mode in modes]
-
-        def submit(entry):
-            index, mode, skill = entry
-            try:
-                response = self.gateway.trigger(
-                    mode, skill, creator or "system", model=model, agent=agent,
-                    description=description)
-                if not isinstance(response, dict) or not response.get("task_id"):
-                    raise RuntimeError("评测服务未返回 task_id，需刷新确认是否已接收")
-                # ID 只用于确认本次响应是否有效，不持久化，也不要求前端保存。
-                return index, mode, {"submission_status": "submitted", "error": None}
-            except Exception as error:
-                self.logger.error(f"提交 Skill 评测未确认: skill_id={skill['skill_id']}, "
-                                  f"mode={mode}, error={error}")
-                return index, mode, {
-                    "submission_status": "unconfirmed",
-                    "error": "未确认提交成功，请先刷新结果，再决定是否重试",
-                }
-
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            for index, mode, value in executor.map(submit, work):
-                items[index]["modes"][mode] = value
-        submitted = sum(value["submission_status"] == "submitted"
-                        for item in items for value in item["modes"].values())
-        return {"skill_count": len(items), "total_count": len(work),
-                "submitted_count": submitted, "unconfirmed_count": len(work) - submitted,
-                "modes": modes, "items": items}
-
 
 # ── 惰性依赖装配 ──
 
@@ -1056,13 +1064,15 @@ def build_runtime():
     from db.operators.coreinsight_operator import CoreinsightOperator
     from logger import logger
 
+    def get_timeout():
+        return SkillEvalConfig.HTTP_TIMEOUT
+
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     operator = CoreinsightOperator()
     modes = default_mode_registry(ALLOWED_SKILL_EVAL_MODES)
     server_url = ServerUrlProvider(_read_config, lambda: SkillEvalConfig.SERVER_URL, logger)
-    timeout = lambda: SkillEvalConfig.HTTP_TIMEOUT
     gateway = SkillEvaluationHttpClient(
-        ThreadLocalHttpTransport(requests.Session), server_url, modes, timeout, logger,
+        ThreadLocalHttpTransport(requests.Session), server_url, modes, get_timeout, logger,
         task_cache_ttl=getattr(SkillEvalConfig, "TASK_CACHE_TTL", 10),
         report_cache_ttl=getattr(SkillEvalConfig, "REPORT_CACHE_TTL", 300),
         empty_report_ttl=getattr(SkillEvalConfig, "EMPTY_REPORT_CACHE_TTL", 3),
@@ -1070,7 +1080,7 @@ def build_runtime():
         report_concurrency=getattr(SkillEvalConfig, "REPORT_HTTP_CONCURRENCY", 8),
         report_cache_max_entries=getattr(SkillEvalConfig, "REPORT_CACHE_MAX_ENTRIES", 2048),
         report_cache_max_bytes=getattr(SkillEvalConfig, "REPORT_CACHE_MAX_BYTES", 64 * 1024 * 1024))
-    harness = HarnessHttpClient(requests, _harness_base_url, _harness_headers, timeout, logger)
+    harness = HarnessHttpClient(requests, _harness_base_url, _harness_headers, get_timeout, logger)
     packages = HarnessPackageResolver(operator, harness, logger)
     states = TaskStatePolicy(SKILL_EVAL_STATE_MAP)
     service = SkillEvaluationService(operator, packages, gateway, modes, states, logger)

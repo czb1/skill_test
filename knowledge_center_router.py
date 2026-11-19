@@ -1,6 +1,8 @@
+from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException, Query, Response, BackgroundTasks
 from fastapi import Request
-from typing import List, Optional
+
 from exception.exceptions import ProjectException
 from knowledge_center.skill_eval_center import get_skill_eval_results
 from logger import logger
